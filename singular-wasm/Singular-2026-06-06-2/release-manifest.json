@@ -1,0 +1,108 @@
+{
+  "assets": {
+    "css/app.css": {
+      "bytes": 8822,
+      "sha256": "601fa17aed3ca14b8f8091cac7a389dcbc3595a2c71d9401257f4dec2b9ba05d",
+      "sha384": "cf1331d39b752bfb4ccde21cb889d491f0b4697a40048ad288351b7ce2370f3a79597b8af90a0c46422ca705e851309e"
+    },
+    "engine/Singular.data": {
+      "bytes": 23266192,
+      "sha256": "9d0781b0a54bf428040f7811c2de3d62025a81307d944a577e7f00061610fd5d",
+      "sha384": "d7c30c6d5a7276872e958e8e0fd28f908985115720f1a15e732eed521996e15cff9e5b68debe3869f602a606f601ca42"
+    },
+    "engine/Singular.js": {
+      "bytes": 193679,
+      "sha256": "755de116aa660e5bed85c8ea30f39be9d3fe8fc2846487175c9f7d9445813dcc",
+      "sha384": "df6589341514a978c48a12a407f9460d8b6d683a22ec6603e5341ecef5e96c77433ab6f3af397988415d9b63d6a3bf4e"
+    },
+    "engine/Singular.wasm": {
+      "bytes": 23731705,
+      "sha256": "3c50c39eaeeca22d71e28c023116290b1258e651f395e8bee106563f83d56bd3",
+      "sha384": "ad4fb214ac18dafb44945322bdd56b0ce079d300193a3663a67da5df4bafa627b3f9a460e353ba1e28c797a3201c0061"
+    },
+    "engine/engine-manifest.json": {
+      "bytes": 1123,
+      "sha256": "fd752329b5bbb8ccf1c4e71b776612997cf9816f4010dc86d0b49a901dd154ff",
+      "sha384": "65cc196413aade202798907eb4d49a9a36a00db0908c5afc784bb6b68bae777044004108c3940dcbac53a8a80145d037"
+    },
+    "index.html": {
+      "bytes": 7644,
+      "sha256": "c6786207b5de492d10e6d3db93b3ff4e9a9c6e1b07ee63b1daac746663181b89",
+      "sha384": "fb412d9d5ac15323163fd13cc32a13f1d6a312daf1bfb95f75e5c331188d18ecafbe18a92dce46ce7931a0ed0a1dbd56"
+    },
+    "js/app.js": {
+      "bytes": 53306,
+      "sha256": "015ce0bdea6e75749b3af36f198b1db5d5477a08c22ed324fd4efcac8d38dc72",
+      "sha384": "60e193f217c45df2487b482029779c5f48517d2c9ce3a54a57141f2ef40a10948efc055af795456819aa9013f9ca155e"
+    },
+    "js/workspace-db.js": {
+      "bytes": 5373,
+      "sha256": "0b9cc53291b37cdc0402b7ef8ff54fc2dd1b5e6828a85b5c5138850819622dc3",
+      "sha384": "0b995cfeed6bc728b10b65f17d2641adb568c9bcff87827a73748f018ee5b9d770fb95922e27cb05539127f21e58f2ca"
+    },
+    "manifest.webmanifest": {
+      "bytes": 175,
+      "sha256": "1d773804b0d013d8f7ff2113fdff2ed2736225ee6d417b4c5ab985045696fc5d",
+      "sha384": "f39dad93f9b6198f5df20f0f6c65d08880be806520b1a3b9b11cf5c8761263e747304ed9a605f8f5d2cce994bfc354b7"
+    },
+    "sw.js": {
+      "bytes": 1315,
+      "sha256": "deb180cbd752d5e8f964dab6fe581d18b1deaaba094cbf04acfec2c0ce521287",
+      "sha384": "e74290b270fc841114d177af75132d1893a7af5bcb9127ed3e03a6250f78bb0870f0ade1ee570a3a1e9b6058be933f1a"
+    },
+    "trust-config.js": {
+      "bytes": 610,
+      "sha256": "7696caa65409a2d4cc55808bebe5940bbf5486c74d61da534b5efe83cb953b82",
+      "sha384": "f4f09e1e76855ac39b6244c60e955405939e0d49495973502998761ae5db19174f7949bd14c13f934c70ae5344432764"
+    },
+    "vendor/versions.json": {
+      "bytes": 1646,
+      "sha256": "0b990b065eda6f8bdc623d9c2809c17976c6eb9820c99304d1f8c9ff4871977b",
+      "sha384": "369ef08895efd7fcc0fbe70187ca4f174b4f1b034e04f9787f45236e8b8928c18ccc0d0cf62441edbe3f3a8f91cc806f"
+    },
+    "vendor/xterm-pty/index.mjs": {
+      "bytes": 18980,
+      "sha256": "d1c53f82af59b62e88503dece97c11349ea13d3a40cc6e443ccb8f27437ce7a3",
+      "sha384": "78f1c3f8ca3d1ae81dbb63d247f6a9e4797e064c7e12da3e0209818a2be6da13a51d94eb19854947e5895c382117f134"
+    },
+    "vendor/xterm-pty/workerTools.js": {
+      "bytes": 7776,
+      "sha256": "4455291d937537e18813ff424d18a87cb575e7cbc7497292a5ed3f6e6e979274",
+      "sha384": "fe5673ddbb5a032a4a3451aa017020543845aec4a2fec0e4279dc74e115a5e06dbb81d5b4661290c9b57c1d229c94566"
+    },
+    "vendor/xterm/addon-fit.js": {
+      "bytes": 1497,
+      "sha256": "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089",
+      "sha384": "885fa3a9bbad8b85e507ae1c95680559812c71bf949d246fdd58158a419866efa8b4d167487afbcbb35c29f0671a2ce7"
+    },
+    "vendor/xterm/xterm.css": {
+      "bytes": 5559,
+      "sha256": "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6",
+      "sha384": "f1793dc32fe0cc40d42ab5edae60856b66c1b8adc1a63a43b8bfe9d1278a417d7d2a197f33e9473a00ff0b261fede7cf"
+    },
+    "vendor/xterm/xterm.js": {
+      "bytes": 289441,
+      "sha256": "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495",
+      "sha384": "335ebd7f5e264593979b7843fefd938b44e1213fd19c041a81703d9e5135e721c0b6b5b5f6075e3c987f1da4f350e7bf"
+    },
+    "workers/singular-batch-worker.js": {
+      "bytes": 4501,
+      "sha256": "0197e4b142642a33fa08669bab3a646525b5cd95ac9efe9b43f583b9bab60a92",
+      "sha384": "8a6d5199883d4ab176c56330dde21a706011a86dbb2ab01226ad69f2f9ec3bfc2e147d6e6360cfda46e577d40a117fa0"
+    },
+    "workers/singular-terminal-worker.js": {
+      "bytes": 10307,
+      "sha256": "d2d8df0c826e8f54e60ba35ec559b088d62c5f4e1aa66209bd1ee79dc4b0b4f8",
+      "sha384": "f26babff11436d5fd9c10f3269bc44f3a6945bfbb4a9f309bcec21bfacbce93c4d6ff1745af0caf4528aade29bba0e28"
+    }
+  },
+  "format": "singular-browser-workbench.asset-manifest.v1",
+  "generatedAt": "2026-06-06T18:34:24Z",
+  "gitCommit": "b91bc19534189b281587267cc8db2024381277c8",
+  "githubManifestUrl": "https://raw.githubusercontent.com/Singular/Singular-in-browser/gh-pages/singular-wasm/Singular-2026-06-06-2/release-manifest.json",
+  "name": "Singular WebAssembly browser release",
+  "packages": {},
+  "releaseId": "Singular-2026-06-06-2",
+  "serverBaseUrl": "https://www.singular.uni-kl.de/wasm/releases/Singular-2026-06-06-2/",
+  "source": "Singular Online release package"
+}
