@@ -145,6 +145,71 @@ textarea {
   tab-size: 2;
 }
 
+.editor-wrap {
+  position: relative;
+  margin-top: .6rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: Canvas;
+  overflow: hidden;
+}
+
+.editor-wrap:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border) 40%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent 82%);
+}
+
+.editor-wrap textarea,
+.editor-highlight {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  min-height: 370px;
+  padding: .65rem .75rem;
+  font: .94rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.editor-wrap textarea {
+  position: relative;
+  z-index: 1;
+  display: block;
+  background: transparent;
+  color: transparent;
+  caret-color: CanvasText;
+  resize: vertical;
+  outline: none;
+}
+
+.editor-wrap textarea::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent 72%);
+  color: transparent;
+}
+
+.editor-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  color: CanvasText;
+}
+
+.tok-comment { color: color-mix(in srgb, CanvasText 48%, Canvas 52%); font-style: italic; }
+.tok-string { color: #0f766e; }
+.tok-keyword { color: #1d4ed8; font-weight: 700; }
+.tok-number { color: #b45309; }
+.tok-builtin { color: #7c3aed; font-weight: 700; }
+
+@media (prefers-color-scheme: dark) {
+  .tok-string { color: #5eead4; }
+  .tok-keyword { color: #93c5fd; }
+  .tok-number { color: #fbbf24; }
+  .tok-builtin { color: #c4b5fd; }
+}
+
 button {
   border: 1px solid var(--border);
   border-radius: 999px;

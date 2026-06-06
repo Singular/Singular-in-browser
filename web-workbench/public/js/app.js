@@ -19,6 +19,7 @@ const DEFAULT_SCRIPT = `ring r = 0,(x,y),dp;\nideal I = x2-y3, x3-y5;\nideal G =
 const PREVIOUS_DEFAULT_SCRIPTS = Object.freeze([
   `ring r = 0,(x,y),dp;\nideal I = x2-y3, x3-y5;\nstd(I);\n`
 ]);
+const TERMINAL_HISTORY_LIMIT = 200;
 const MAX_PULL_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_IMPORT_JSON_BYTES = 50 * 1024 * 1024;
 const SESSION_FS_TIMEOUT_MS = 8000;
@@ -47,6 +48,53 @@ const PRIMARY_ARIA = IS_APPLE_PLATFORM ? 'Meta' : 'Control';
 const ALT_LABEL = IS_APPLE_PLATFORM ? 'Option' : 'Alt';
 const COMPACT_ALT_LABEL = IS_APPLE_PLATFORM ? '⌥' : 'Alt';
 const COMPACT_SHIFT_LABEL = IS_APPLE_PLATFORM ? '⇧' : 'Shift';
+const SINGULAR_KEYWORDS = Object.freeze(new Set([
+  'break',
+  'continue',
+  'else',
+  'export',
+  'for',
+  'if',
+  'keepring',
+  'proc',
+  'return',
+  'static',
+  'while'
+]));
+const SINGULAR_BUILTINS = Object.freeze(new Set([
+  'attrib',
+  'basering',
+  'bigint',
+  'def',
+  'execute',
+  'groebner',
+  'ideal',
+  'int',
+  'intmat',
+  'intvec',
+  'lib',
+  'LIB',
+  'link',
+  'list',
+  'matrix',
+  'module',
+  'number',
+  'option',
+  'poly',
+  'print',
+  'qring',
+  'quotient',
+  'resolution',
+  'ring',
+  'setring',
+  'size',
+  'std',
+  'string',
+  'timer',
+  'typeof',
+  'vector',
+  'write'
+]));
 
 const el = Object.freeze({
   statusDot: document.getElementById('engine-status-dot'),
@@ -60,6 +108,7 @@ const el = Object.freeze({
   pathInput: document.getElementById('path-input'),
   selectedPath: document.getElementById('selected-path'),
   editor: document.getElementById('editor'),
+  editorHighlight: document.getElementById('editor-highlight'),
   output: document.getElementById('output-log'),
   terminalBox: document.getElementById('terminal'),
   folderStatus: document.getElementById('folder-status'),
@@ -99,12 +148,16 @@ let terminalInputWriter = null;
 let terminalInputMethod = '';
 let selectedPath = '/workspace/example.sing';
 let folderHandle = null;
+let terminalCurrentLine = '';
+let terminalHistoryCursor = null;
+let terminalHistoryDraft = '';
 let workerRequestId = 0;
 let ptyModulePromise = null;
 let vendorVerified = false;
 let engineVerified = false;
 let releaseVerified = false;
 let trustedReleaseManifest = null;
+const terminalHistory = [];
 const sessionFiles = new Map();
 const sessionBaselines = new Map();
 const pendingSessionBaselines = new Set();
@@ -195,6 +248,168 @@ function log(message) {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function tokenSpan(className, text) {
+  return `<span class="${className}">${escapeHtml(text)}</span>`;
+}
+
+function highlightSingular(source) {
+  const text = String(source || '');
+  let html = '';
+  let i = 0;
+  while (i < text.length) {
+    const rest = text.slice(i);
+    if (rest.startsWith('/*')) {
+      const end = text.indexOf('*/', i + 2);
+      const next = end < 0 ? text.length : end + 2;
+      html += tokenSpan('tok-comment', text.slice(i, next));
+      i = next;
+      continue;
+    }
+    if (rest.startsWith('//')) {
+      const end = text.indexOf('\n', i + 2);
+      const next = end < 0 ? text.length : end;
+      html += tokenSpan('tok-comment', text.slice(i, next));
+      i = next;
+      continue;
+    }
+    const quote = text[i];
+    if (quote === '"' || quote === "'") {
+      let next = i + 1;
+      while (next < text.length) {
+        if (text[next] === '\\') {
+          next += 2;
+          continue;
+        }
+        if (text[next] === quote) {
+          next += 1;
+          break;
+        }
+        next += 1;
+      }
+      html += tokenSpan('tok-string', text.slice(i, next));
+      i = next;
+      continue;
+    }
+    const number = /^[0-9]+(?:\.[0-9]+)?/.exec(rest);
+    if (number) {
+      html += tokenSpan('tok-number', number[0]);
+      i += number[0].length;
+      continue;
+    }
+    const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest);
+    if (word) {
+      const value = word[0];
+      const lower = value.toLowerCase();
+      if (SINGULAR_KEYWORDS.has(lower)) html += tokenSpan('tok-keyword', value);
+      else if (SINGULAR_BUILTINS.has(value) || SINGULAR_BUILTINS.has(lower)) html += tokenSpan('tok-builtin', value);
+      else html += escapeHtml(value);
+      i += value.length;
+      continue;
+    }
+    html += escapeHtml(text[i]);
+    i += 1;
+  }
+  return html.endsWith('\n') ? `${html} ` : (html || ' ');
+}
+
+function refreshEditorHighlight() {
+  if (!el.editorHighlight) return;
+  el.editorHighlight.innerHTML = shouldHighlightEditor()
+    ? highlightSingular(el.editor.value)
+    : escapeHtml(el.editor.value || ' ');
+  el.editorHighlight.scrollTop = el.editor.scrollTop;
+  el.editorHighlight.scrollLeft = el.editor.scrollLeft;
+}
+
+function setEditorValue(value, { focus = false } = {}) {
+  el.editor.value = String(value || '');
+  refreshEditorHighlight();
+  if (focus) el.editor.focus();
+}
+
+function rememberTerminalCommand(line) {
+  const command = String(line || '').trimEnd();
+  if (!command.trim()) return;
+  if (terminalHistory[terminalHistory.length - 1] === command) return;
+  terminalHistory.push(command);
+  if (terminalHistory.length > TERMINAL_HISTORY_LIMIT) terminalHistory.shift();
+}
+
+function rememberTerminalCommands(text) {
+  for (const line of String(text || '').split(/\r?\n/)) rememberTerminalCommand(line);
+}
+
+function resetTerminalLineNavigation() {
+  terminalHistoryCursor = null;
+  terminalHistoryDraft = '';
+}
+
+function writeTerminalKeystrokes(text) {
+  const value = String(text || '');
+  if (typeof ptyMaster?.ldisc?.writeFromLower === 'function') {
+    ptyMaster.ldisc.writeFromLower(value);
+    return true;
+  }
+  if (typeof terminal?._core?.coreService?.triggerDataEvent === 'function') {
+    terminal._core.coreService.triggerDataEvent(value, true);
+    return true;
+  }
+  if (typeof terminal?.input === 'function') {
+    terminal.input(value);
+    return true;
+  }
+  return writeTerminalInput(value, { quiet: true });
+}
+
+function noteTerminalData(data) {
+  const text = String(data || '');
+  if (!text || text.includes('\x1b')) return;
+  for (const char of text) {
+    if (char === '\r' || char === '\n') {
+      rememberTerminalCommand(terminalCurrentLine);
+      terminalCurrentLine = '';
+      resetTerminalLineNavigation();
+    } else if (char === '\x7f' || char === '\b') {
+      terminalCurrentLine = Array.from(terminalCurrentLine).slice(0, -1).join('');
+      resetTerminalLineNavigation();
+    } else if (char === '\x15') {
+      terminalCurrentLine = '';
+      resetTerminalLineNavigation();
+    } else if (char >= ' ') {
+      terminalCurrentLine += char;
+      resetTerminalLineNavigation();
+    }
+  }
+}
+
+function replaceTerminalInputLine(value) {
+  const next = String(value || '');
+  const erase = '\x7f'.repeat(Array.from(terminalCurrentLine).length);
+  if (!writeTerminalKeystrokes(`${erase}${next}`)) return false;
+  terminalCurrentLine = next;
+  return true;
+}
+
+function navigateTerminalHistory(direction) {
+  if (!terminalHistory.length || !terminalInputWriter) return false;
+  if (terminalHistoryCursor === null) {
+    terminalHistoryDraft = terminalCurrentLine;
+    terminalHistoryCursor = terminalHistory.length;
+  }
+  terminalHistoryCursor = Math.max(0, Math.min(terminalHistory.length, terminalHistoryCursor + direction));
+  const next = terminalHistoryCursor === terminalHistory.length
+    ? terminalHistoryDraft
+    : terminalHistory[terminalHistoryCursor];
+  return replaceTerminalInputLine(next);
 }
 
 function formatRuntimeMs(ms) {
@@ -371,6 +586,11 @@ function setSelectedPath(path) {
   selectedPath = normalizePath(path || selectedPath);
   el.pathInput.value = selectedPath;
   el.selectedPath.textContent = selectedPath;
+  refreshEditorHighlight();
+}
+
+function shouldHighlightEditor() {
+  return /\.(?:lib|sing)$/i.test(normalizePath(el.pathInput.value || selectedPath));
 }
 
 function getArgs({ batch = false } = {}) {
@@ -428,6 +648,22 @@ function ensureTerminal() {
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
   }
+  terminal.onData?.(noteTerminalData);
+  terminal.attachCustomKeyEventHandler?.(event => {
+    if (event.type !== 'keydown') return true;
+    if (event.altKey || event.ctrlKey || event.metaKey) return true;
+    if (event.key === 'ArrowUp') {
+      if (!navigateTerminalHistory(-1)) return true;
+      event.preventDefault();
+      return false;
+    }
+    if (event.key === 'ArrowDown') {
+      if (!navigateTerminalHistory(1)) return true;
+      event.preventDefault();
+      return false;
+    }
+    return true;
+  });
   terminal.open(el.terminalBox);
   fitAddon?.fit?.();
   window.addEventListener('resize', () => fitAddon?.fit?.());
@@ -762,9 +998,9 @@ async function loadFileIntoEditor(path) {
   if (!record) return;
   setSelectedPath(normalized);
   if (textExtension(normalized)) {
-    el.editor.value = decodeText(record.data);
+    setEditorValue(decodeText(record.data));
   } else {
-    el.editor.value = `/* Binary file selected: ${normalized}\n   Size: ${record.data?.byteLength || 0} bytes\n   Use Download to save it. */\n`;
+    setEditorValue(`/* Binary file selected: ${normalized}\n   Size: ${record.data?.byteLength || 0} bytes\n   Use Download to save it. */\n`);
   }
   await refreshFileList();
 }
@@ -850,6 +1086,8 @@ async function startSession() {
     await ensureEngineVerified();
     const term = ensureTerminal();
     term.clear();
+    terminalCurrentLine = '';
+    resetTerminalLineNavigation();
     const pty = await loadPtyModule();
     const pair = pty.openpty();
     ptyMaster = pair.master;
@@ -889,6 +1127,8 @@ function terminateSession({ silent = false } = {}) {
   ptySlave = null;
   terminalInputWriter = null;
   terminalInputMethod = '';
+  terminalCurrentLine = '';
+  resetTerminalLineNavigation();
   stopSessionFileTracking();
   rejectPendingWorkerRequests();
   if (!silent) log('Terminated Singular session.');
@@ -916,16 +1156,21 @@ async function sendEditorToTerminal() {
     return;
   }
   const code = el.editor.value.endsWith('\n') ? el.editor.value : `${el.editor.value}\n`;
-  if (writeTerminalInput(code)) log(`Sent editor contents to the terminal via ${terminalInputMethod}.`);
+  if (writeTerminalInput(code)) {
+    rememberTerminalCommands(code);
+    terminalCurrentLine = '';
+    resetTerminalLineNavigation();
+    log(`Sent editor contents to the terminal via ${terminalInputMethod}.`);
+  }
 }
 
-function writeTerminalInput(text) {
+function writeTerminalInput(text, { quiet = false } = {}) {
   try {
     if (!terminalInputWriter) return false;
     terminalInputWriter(text);
     return true;
   } catch (error) {
-    log(`Could not send terminal input: ${error.message || String(error)}`);
+    if (!quiet) log(`Could not send terminal input: ${error.message || String(error)}`);
     return false;
   }
 }
@@ -945,7 +1190,13 @@ async function loadSelectedLib() {
     log('Library saved, but the terminal is not ready for input yet.');
     return;
   }
-  if (writeTerminalInput(`LIB "${path}";\n`)) log(`Sent LIB command for ${path} via ${terminalInputMethod}.`);
+  const command = `LIB "${path}";\n`;
+  if (writeTerminalInput(command)) {
+    rememberTerminalCommands(command);
+    terminalCurrentLine = '';
+    resetTerminalLineNavigation();
+    log(`Sent LIB command for ${path} via ${terminalInputMethod}.`);
+  }
 }
 
 function handleWorkerMessage(message) {
@@ -1034,7 +1285,7 @@ async function runBatch({ benchmark = false } = {}) {
 async function benchmark() {
   const sample = `ring r = 0,(x,y,z),dp;\nideal I = x2+y2+z2, x*y-z, y*z-x;\ntimer = 1;\nstd(I);\n`; // modest by design
   setSelectedPath('/workspace/benchmark.sing');
-  el.editor.value = sample;
+  setEditorValue(sample);
   await runBatch({ benchmark: true });
 }
 
@@ -1200,8 +1451,7 @@ function wireEvents() {
     bindButton('newFile', () => {
       const suggested = `/workspace/untitled-${Date.now()}.sing`;
       setSelectedPath(suggested);
-      el.editor.value = '';
-      el.editor.focus();
+      setEditorValue('', { focus: true });
     }),
     bindButton('upload', () => el.fileInput.click()),
     bindButton('download', downloadSelectedFile),
@@ -1227,6 +1477,8 @@ function wireEvents() {
   el.fileFilter.addEventListener('input', refreshFileList);
   el.pathInput.addEventListener('change', () => setSelectedPath(el.pathInput.value));
   el.jsonInput.addEventListener('change', () => importWorkspace(el.jsonInput.files?.[0]));
+  el.editor.addEventListener('input', refreshEditorHighlight);
+  el.editor.addEventListener('scroll', refreshEditorHighlight);
 
   document.addEventListener('keydown', event => {
     for (const action of actions) {
@@ -1241,6 +1493,7 @@ function wireEvents() {
 
 async function main() {
   wireEvents();
+  refreshEditorHighlight();
   await ensureExampleFile();
   await refreshFileList();
   await checkEngineAssets();

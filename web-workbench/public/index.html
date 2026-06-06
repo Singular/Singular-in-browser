@@ -71,10 +71,13 @@
       </div>
       <label for="path-input" class="small muted">Virtual path inside Singular:</label>
       <input id="path-input" class="text-input mono" value="/workspace/example.sing" spellcheck="false">
-      <textarea id="editor" spellcheck="false">ring r = 0,(x,y),dp;
+      <div class="editor-wrap">
+        <pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre>
+        <textarea id="editor" spellcheck="false">ring r = 0,(x,y),dp;
 ideal I = x2-y3, x3-y5;
 std(I);
 </textarea>
+      </div>
       <div class="button-row">
         <button id="save-editor" type="button">Save to workspace</button>
         <button id="send-editor" type="button" class="primary">Send to terminal</button>
