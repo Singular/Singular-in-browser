@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -eux
 
+# TODO:
+# - add "machinelearning Order singmathic" dyn_modules
+# - enable openmp
+# - maybe add "-msimd128" for all library?
+# - polish code
+# - check if there is missing functionality
+
 BASEDIR="$(pwd)"
 
 if ! command -v emmake &> /dev/null; then
@@ -203,6 +210,243 @@ fi
     emmake make install
 )
 
+# --- MEMTAILOR ---
+(
+    mkdir -p "$AUX_BUILD/memtailor"
+    cd "$AUX_BUILD/memtailor"
+    
+    if [[ ! -d "$EXTERN_DIR/memtailor" ]]; then
+        echo "Cloning Memtailor..."
+        git clone https://github.com/broune/memtailor.git "$EXTERN_DIR/memtailor"
+        
+        # Generate configure script
+        cd "$EXTERN_DIR/memtailor"
+        ./autogen.sh
+        cd -
+    fi
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CXXFLAGS="-O2 -fexceptions -std=gnu++0x" \
+        emconfigure "$EXTERN_DIR/memtailor/configure" \
+            --host=wasm32-unknown-emscripten \
+            --with-gtest=no \
+            --disable-shared \
+            --prefix="$AUX_PREFIX"
+    fi
+    
+    emmake make -j8
+    emmake make install
+)
+
+# --- MATHIC ---
+(
+    mkdir -p "$AUX_BUILD/mathic"
+    cd "$AUX_BUILD/mathic"
+    
+    if [[ ! -d "$EXTERN_DIR/mathic" ]]; then
+        echo "Cloning Mathic..."
+        git clone https://github.com/broune/mathic.git "$EXTERN_DIR/mathic"
+        
+        sed -i 's/bool operator==(iterator it)/bool operator==(const iterator\& it)/g' "$EXTERN_DIR/mathic/src/mathic/DivList.h"
+        sed -i 's/bool operator!=(iterator it)/bool operator!=(const iterator\& it)/g' "$EXTERN_DIR/mathic/src/mathic/DivList.h"
+        
+        sed -i 's/struct Bucket/public: struct Bucket/g' "$EXTERN_DIR/mathic/src/mathic/Geobucket.h"
+        
+        cd "$EXTERN_DIR/mathic"
+        ./autogen.sh
+        cd -
+    fi
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CXXFLAGS="-O2 -fexceptions -std=gnu++0x" \
+        emconfigure "$EXTERN_DIR/mathic/configure" \
+            --host=wasm32-unknown-emscripten \
+            --with-gtest=no \
+            --disable-shared \
+            --prefix="$AUX_PREFIX" \
+            MEMTAILOR_CFLAGS="-I$AUX_PREFIX/include" \
+            MEMTAILOR_LIBS="-L$AUX_PREFIX/lib -lmemtailor"
+    fi
+    
+    emmake make -j8
+    emmake make install
+)
+
+# --- MATHICGB ---
+(
+    mkdir -p "$AUX_BUILD/mathicgb"
+    cd "$AUX_BUILD/mathicgb"
+
+    if [[ ! -d "$EXTERN_DIR/mathicgb" ]]; then
+        echo "Cloning MathicGB..."
+        git clone https://github.com/broune/mathicgb.git "$EXTERN_DIR/mathicgb"
+    fi
+
+    cd "$EXTERN_DIR/mathicgb"
+    if [[ ! -f configure ]]; then
+
+        sed -i '/friend void mathic::PairQueueNamespace::constructPairData/{n;s/Index/mathic::PairQueueNamespace::Index/g;}' src/mathicgb/SPairs.hpp
+        sed -i '/friend void mathic::PairQueueNamespace::destructPairData/{n;s/Index/mathic::PairQueueNamespace::Index/g;}' src/mathicgb/SPairs.hpp
+
+        sed -i '466s/Coefficient coef/Coefficient coef_in/' src/mathicgb/MathicIO.hpp
+        sed -i '470a \      typename std::remove_const<Coefficient>::type coef = coef_in;' src/mathicgb/MathicIO.hpp
+        sed -i '1i #include <type_traits>' src/mathicgb/MathicIO.hpp
+
+        ./autogen.sh
+    fi
+    cd "$AUX_BUILD/mathicgb"
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CXXFLAGS="-O2 -fexceptions -std=gnu++11 -Wno-delete-abstract-non-virtual-dtor -Wno-null-dereference " \
+        emconfigure "$EXTERN_DIR/mathicgb/configure" \
+            --host=wasm32-unknown-emscripten \
+            --with-tbb=no \
+            --with-gtest=no \
+            --disable-shared \
+            --prefix="$AUX_PREFIX" \
+            MEMTAILOR_CFLAGS="-I$AUX_PREFIX/include" \
+            MEMTAILOR_LIBS="-L$AUX_PREFIX/lib -lmemtailor" \
+            MATHIC_CFLAGS="-I$AUX_PREFIX/include" \
+            MATHIC_LIBS="-L$AUX_PREFIX/lib -lmathic"
+    fi
+
+    emmake make -j8
+    emmake make install
+)
+
+# --- GIVARO ---
+(
+    mkdir -p "$AUX_BUILD/givaro"
+    cd "$AUX_BUILD/givaro"
+    
+    if [[ ! -d "$EXTERN_DIR/givaro" ]]; then
+        echo "Cloning Givaro..."
+        git clone https://github.com/linbox-team/givaro.git "$EXTERN_DIR/givaro"
+        
+        cd "$EXTERN_DIR/givaro"
+        NOCONFIGURE=1 ./autogen.sh
+        cd -
+    fi
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CXXFLAGS="-O2 -fexceptions -std=c++11" \
+        emconfigure "$EXTERN_DIR/givaro/configure" \
+            --host=wasm32-unknown-emscripten \
+            --with-gmp="$AUX_PREFIX" \
+            --without-archnative \
+            --disable-shared \
+            --prefix="$AUX_PREFIX"
+    fi
+    
+    emmake make -j8
+    emmake make install
+)
+
+# --- OPENBLAS ---
+(
+    if [[ ! -d "$EXTERN_DIR/openblas" ]]; then
+        echo "Cloning OpenBLAS..."
+        git clone https://github.com/OpenMathLib/OpenBLAS.git "$EXTERN_DIR/openblas"
+    fi
+
+    cd "$EXTERN_DIR/openblas"
+    
+    if [[ ! -f libopenblas.a ]]; then
+
+        make -j8 \
+            HOSTCC=gcc \
+            CC="emcc -fexceptions -msimd128" \
+            AR=emar \
+            RANLIB=emranlib \
+            TARGET=WASM128_GENERIC \
+            NOFORTRAN=1 \
+            NO_LAPACK=1 \
+            USE_THREAD=0
+    fi
+    
+    make PREFIX="$AUX_PREFIX" install
+    cd -
+)
+
+# --- FFLAS-FFPACK ---
+(
+    mkdir -p "$AUX_BUILD/fflas-ffpack"
+    cd "$AUX_BUILD/fflas-ffpack"
+    
+    if [[ ! -d "$EXTERN_DIR/fflas-ffpack" ]]; then
+        echo "Cloning FFLAS-FFPACK..."
+        git clone https://github.com/linbox-team/fflas-ffpack.git "$EXTERN_DIR/fflas-ffpack"
+        
+        cd "$EXTERN_DIR/fflas-ffpack"
+        NOCONFIGURE=1 ./autogen.sh
+        cd -
+    fi
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib -msimd128 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=128MB" \
+        CFLAGS="-O2 -fexceptions -msimd128" \
+        CXXFLAGS="-O2 -fexceptions -std=c++11 -msimd128" \
+        emconfigure "$EXTERN_DIR/fflas-ffpack/configure" \
+            --host=wasm32-unknown-emscripten \
+            --without-archnative \
+            --disable-openmp \
+            --with-blas-libs="$AUX_PREFIX/lib/libopenblas.a" \
+            --with-blas-cflags="-I$AUX_PREFIX/include" \
+            --disable-shared \
+            --prefix="$AUX_PREFIX" \
+            GIVARO_CFLAGS="-I$AUX_PREFIX/include" \
+            GIVARO_LIBS="-L$AUX_PREFIX/lib -lgivaro -lgmp"
+    fi
+    
+    emmake make -j8
+    emmake make install
+)
+
+# --- SPASM ---
+(
+    mkdir -p "$AUX_BUILD/spasm"
+    cd "$AUX_BUILD/spasm"
+    
+    if [[ ! -d "$EXTERN_DIR/spasm" ]]; then
+        echo "Cloning SpaSM..."
+        git clone https://github.com/cbouilla/spasm.git "$EXTERN_DIR/spasm"
+        
+        cd "$EXTERN_DIR/spasm"
+        sed -i 's/add_subdirectory(tools)/#add_subdirectory(tools)/g' CMakeLists.txt
+        sed -i 's/add_subdirectory(tests)/#add_subdirectory(tests)/g' CMakeLists.txt
+        sed -i 's/add_subdirectory(bench)/#add_subdirectory(bench)/g' CMakeLists.txt
+        
+        sed -i 's/find_package(OpenMP REQUIRED)//g' CMakeLists.txt
+        find . -type f -name "CMakeLists.txt" -exec sed -i 's/OpenMP::OpenMP_C//g; s/OpenMP::OpenMP_CXX//g' {} +
+        cd -
+    fi
+
+    cp "$BASEDIR/emscripten/omp.h" "$AUX_PREFIX/include/omp.h"
+    sed -i '/openmp was not detected correctly at configure time/d' \
+        "$AUX_PREFIX/include/fflas-ffpack/fflas-ffpack-config.h"
+
+    if [[ ! -f Makefile ]]; then
+        emcmake cmake "$EXTERN_DIR/spasm" \
+            -DCMAKE_INSTALL_PREFIX="$AUX_PREFIX" \
+            -DCMAKE_PREFIX_PATH="$AUX_PREFIX" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_FLAGS="-Wno-unknown-pragmas -include omp.h -Wno-error -msimd128" \
+            -DCMAKE_CXX_FLAGS="-Wno-unknown-pragmas -include omp.h -Wno-error -msimd128"
+    fi
+    
+    emmake make -j8
+    cp "$AUX_BUILD/spasm/src/libspasm.a" "$AUX_PREFIX/lib/libspasm.a"
+)
+
 # --- TOPCOM ---
 (
     mkdir -p "$AUX_BUILD/topcom"
@@ -240,7 +484,22 @@ fi
 
 cd "$BASEDIR"
 
-export EMCC_CFLAGS="-fexceptions"
+export EMCC_CFLAGS="-fexceptions -msimd128"
+export PKG_CONFIG_PATH="$AUX_PREFIX/lib/pkgconfig"
+
+# The SINGULAR_MODULES is obtained from "configure.ac", with "python", "pyobject" and "systhreads" removed
+
+# I get the following warning for "machinelearning Order singmathic":
+# warning: undefined symbol: Order_mod_init (referenced by top-level compiled C/C++ code)
+# warning: undefined symbol: machinelearning_mod_init (referenced by top-level compiled C/C++ code)
+# warning: undefined symbol: singmathic_mod_init (referenced by top-level compiled C/C++ code)
+# I have no idea how to fix it
+
+SINGULAR_MODULES="bigintm syzextra gfanlib customstd staticdemo subsets freealgebra partialgb gitfan interval cohomo loctriv sispasm"
+
+MODULES_CSV="${SINGULAR_MODULES// /,}"
+
+cp "$BASEDIR/emscripten/wasm_patch.c" "$BASEDIR/Singular"
 
 emcc -c "$BASEDIR/emscripten/wasm_patch.c" -o "$BASEDIR/wasm_patch.o"
 emar rcs "$BASEDIR/libwasm_patch.a" "$BASEDIR/wasm_patch.o"
@@ -255,6 +514,7 @@ emconfigure ./configure \
     --with-ntl="$AUX_PREFIX" \
     --with-normaliz="$AUX_PREFIX" \
     --with-topcom="$AUX_PREFIX" \
+    --with-mathicgb="$AUX_PREFIX" \
     --disable-shared \
     --enable-static \
     --without-pic \
@@ -265,52 +525,58 @@ emconfigure ./configure \
     --disable-omalloc \
     --enable-p-procs-static \
     --disable-p-procs-dynamic \
-    --with-builtinmodules=syzextra,gfanlib,freealgebra,subsets,cohomo,loctriv,customstd,partialgb,sispasm \
+    --with-builtinmodules=$MODULES_CSV \
+    MATHICGB_CFLAGS="-I$AUX_PREFIX/include" \
+    MATHICGB_LIBS="-L$AUX_PREFIX/lib -lmathicgb -lmathic -lmemtailor" \
     CXX="em++ -fexceptions" \
     CC="emcc -fexceptions" \
     CXXFLAGS="-O2 -fexceptions -D_GNU_SOURCE -std=c++14 -I$AUX_PREFIX/include -I$AUX_PREFIX/include/cddlib" \
     CFLAGS="-O2 -fexceptions -D_GNU_SOURCE -I$AUX_PREFIX/include -I$AUX_PREFIX/include/cddlib" \
-    LDFLAGS="-L$AUX_PREFIX/lib -L$BASEDIR -lwasm_patch -fexceptions -s ASYNCIFY=1 -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=0 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -O2"
+    LDFLAGS="-L$AUX_PREFIX/lib -L$BASEDIR -lwasm_patch -fexceptions -s ASYNCIFY=1 -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=0 -O2"
 
-emmake make -j8
+emmake make -j8 -k || true
 
 echo "Building static modules..."
 
-for mod in syzextra gfanlib freealgebra subsets cohomo loctriv customstd partialgb sispasm; do
+for mod in $SINGULAR_MODULES; do
     echo "Building module: $mod"
     emmake make -C "Singular/dyn_modules/$mod" -j8
 done
 
-cp "$BASEDIR/emscripten/wasm_patch.c" "$BASEDIR/Singular"
 cd Singular
 
-MODULE_LIBS="
-    dyn_modules/syzextra/.libs/libsyzextra.a \
-    dyn_modules/gfanlib/.libs/libgfanlib.a \
-    dyn_modules/freealgebra/.libs/libfreealgebra.a \
-    dyn_modules/subsets/.libs/libsubsets.a \
-    dyn_modules/cohomo/.libs/libcohomo.a \
-    dyn_modules/loctriv/.libs/libloctriv.a \
-    dyn_modules/customstd/.libs/libcustomstd.a \
-    dyn_modules/partialgb/.libs/libpartialgb.a \
-    dyn_modules/sispasm/.libs/libsispasm.a"
+MODULE_LIBS=""
 
+for mod in $SINGULAR_MODULES; do
+    MODULE_LIBS="$MODULE_LIBS dyn_modules/$mod/.libs/lib${mod}.a"
+done
+
+# See "Singular/Makefile.am"
 em++ wasm_patch.c tesths.o utils.o \
     -Wl,--start-group \
     ./.libs/libSingular.a \
+    ../kernel/.libs/libkernel.a \
     ../libpolys/polys/.libs/libpolys.a \
+    ../libpolys/coeffs/.libs/libcoeffs.a \
+    ../libpolys/misc/.libs/libmisc.a \
+    ../libpolys/reporter/.libs/libreporter.a \
     ../factory/.libs/libfactory.a \
+    ../gfanlib/.libs/libgfan.a \
     ../resources/.libs/libsingular_resources.a \
     $MODULE_LIBS \
     -Wl,--end-group \
     -L"$AUX_PREFIX/lib" \
-    -lTOPCOM -lnormaliz -lflint -lmpfr -lcddgmp -lntl -lgmp\
+    -lmathicgb -lmathic -lmemtailor \
+    -lspasm -lopenblas -lgivaro \
+    -lTOPCOM -lnormaliz -lflint -lmpfr -lcddgmp -lntl \
+    -lgmp \
     -s ASYNCIFY=1 \
     -s TOTAL_STACK=64MB \
     -s INITIAL_MEMORY=1024MB \
     -s ALLOW_MEMORY_GROWTH=1 \
     -fexceptions \
     -O2 \
+    -msimd128 \
     --preload-file LIB@/LIB \
     --preload-file ../doc@/info \
     -o Singular.html
