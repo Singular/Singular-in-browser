@@ -140,7 +140,10 @@ const el = Object.freeze({
 
 let terminal = null;
 let fitAddon = null;
+let terminalDataDisposable = null;
+let terminalResizeHandler = null;
 let worker = null;
+let sessionStarting = false;
 let ptyServer = null;
 let ptyMaster = null;
 let ptySlave = null;
@@ -234,10 +237,37 @@ const SHORTCUTS = Object.freeze({
   copyOutput: shortcut('c', { alt: true })
 });
 
+const STARTUP_STAGES = Object.freeze([
+  ['Verify', 'verifying engine and release assets'],
+  ['Terminal', 'opening terminal'],
+  ['PTY', 'creating terminal bridge'],
+  ['Worker', 'starting Singular worker'],
+  ['Sync', 'copying workspace files'],
+  ['Attach', 'attaching terminal runtime']
+]);
+
 function setStatus(kind, text, detail = '') {
   el.statusDot.className = `dot${kind ? ` ${kind}` : ''}`;
   el.status.textContent = text;
   el.detail.textContent = detail;
+}
+
+function setStartButtonState(state, label = '') {
+  const button = el.buttons.start;
+  if (!button) return;
+  button.dataset.sessionState = state || '';
+  if (state === 'starting') button.setAttribute('aria-busy', 'true');
+  else button.removeAttribute('aria-busy');
+  const text = button.querySelector('.button-label');
+  if (text) text.textContent = label || button.dataset.label || 'Start';
+}
+
+function setStartupStage(index) {
+  const [label, detail] = STARTUP_STAGES[index - 1];
+  const total = STARTUP_STAGES.length;
+  setStartButtonState('starting', `${index}/${total} ${label}`);
+  setStatus('busy', `Starting ${index}/${total}`, detail);
+  log(`Startup ${index}/${total}: ${detail}.`);
 }
 
 function log(message) {
@@ -648,7 +678,7 @@ function ensureTerminal() {
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
   }
-  terminal.onData?.(noteTerminalData);
+  terminalDataDisposable = terminal.onData?.(noteTerminalData) || null;
   terminal.attachCustomKeyEventHandler?.(event => {
     if (event.type !== 'keydown') return true;
     if (event.altKey || event.ctrlKey || event.metaKey) return true;
@@ -666,14 +696,19 @@ function ensureTerminal() {
   });
   terminal.open(el.terminalBox);
   fitAddon?.fit?.();
-  window.addEventListener('resize', () => fitAddon?.fit?.());
+  terminalResizeHandler = () => fitAddon?.fit?.();
+  window.addEventListener('resize', terminalResizeHandler);
   return terminal;
 }
 
 function resetTerminal() {
+  try { terminalDataDisposable?.dispose?.(); } catch (_) { /* noop */ }
+  if (terminalResizeHandler) window.removeEventListener('resize', terminalResizeHandler);
   try { terminal?.dispose?.(); } catch (_) { /* noop */ }
   terminal = null;
   fitAddon = null;
+  terminalDataDisposable = null;
+  terminalResizeHandler = null;
   el.terminalBox.textContent = '';
 }
 
@@ -1077,17 +1112,20 @@ async function importWorkspace(file) {
 }
 
 async function startSession() {
-  if (worker) {
+  if (worker || sessionStarting) {
     log('A Singular session is already running. Use Restart or Terminate first.');
     return;
   }
+  sessionStarting = true;
   try {
-    setStatus('busy', 'Starting', 'loading terminal and worker');
+    setStartupStage(1);
     await ensureEngineVerified();
+    setStartupStage(2);
     const term = ensureTerminal();
     term.clear();
     terminalCurrentLine = '';
     resetTerminalLineNavigation();
+    setStartupStage(3);
     const pty = await loadPtyModule();
     const pair = pty.openpty();
     ptyMaster = pair.master;
@@ -1095,32 +1133,43 @@ async function startSession() {
     term.loadAddon(ptyMaster);
     selectTerminalInputBridge();
 
+    setStartupStage(4);
     worker = new Worker('workers/singular-terminal-worker.js', { name: 'singular-terminal-worker' });
     worker.addEventListener('message', event => handleWorkerMessage(event.data));
     worker.addEventListener('error', event => {
       log(`Terminal worker error: ${event.message}`);
       setStatus('error', 'Worker error');
+      setStartButtonState('failed', 'Failed');
     });
 
     postControl(worker, 'configure', { args: getArgs({ batch: false }) });
+    setStartupStage(5);
     await sendWorkspaceToWorker(worker);
 
+    setStartupStage(6);
     ptyServer = new pty.TtyServer(ptySlave);
     ptyServer.start(worker);
     startSessionFileTracking();
     setStatus('ready', 'Session running', 'interactive terminal');
+    setStartButtonState('running', 'Running');
+    sessionStarting = false;
     log('Started Singular terminal session.');
     log(terminalInputMethod ? `Terminal input bridge: ${terminalInputMethod}.` : 'Terminal input bridge is not available.');
   } catch (error) {
-    setStatus('error', 'Could not start', error.message || String(error));
-    log(`Start failed: ${error.message || String(error)}`);
+    sessionStarting = false;
     terminateSession({ silent: true });
+    setStatus('error', 'Could not start', error.message || String(error));
+    setStartButtonState('failed', 'Failed');
+    log(`Start failed: ${error.message || String(error)}`);
   }
 }
 
 function terminateSession({ silent = false } = {}) {
   try { ptyServer?.close?.(); } catch (_) { /* noop */ }
+  try { ptyMaster?.dispose?.(); } catch (_) { /* noop */ }
+  try { ptySlave?.dispose?.(); } catch (_) { /* noop */ }
   try { worker?.terminate?.(); } catch (_) { /* noop */ }
+  sessionStarting = false;
   worker = null;
   ptyServer = null;
   ptyMaster = null;
@@ -1133,6 +1182,7 @@ function terminateSession({ silent = false } = {}) {
   rejectPendingWorkerRequests();
   if (!silent) log('Terminated Singular session.');
   setStatus('', 'Not started');
+  setStartButtonState('', 'Start');
   refreshFileList();
 }
 

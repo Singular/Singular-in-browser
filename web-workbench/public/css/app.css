@@ -229,6 +229,21 @@ button {
 button:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button[data-session-state="starting"] {
+  background: color-mix(in srgb, var(--ok) 18%, Canvas 82%);
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
+  color: CanvasText;
+}
+button[data-session-state="running"] {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: white;
+}
+button[data-session-state="failed"] {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
 button.danger { border-color: color-mix(in srgb, var(--danger) 70%, var(--border)); color: var(--danger); }
 button.ghost { background: transparent; }
 .button-label {
@@ -256,6 +271,7 @@ button.ghost { background: transparent; }
 }
 .button-row.no-margin { margin-top: 0; }
 .button-grid.compact { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sidebar .button-grid.compact { grid-template-columns: 1fr; }
 .button-grid.compact button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
