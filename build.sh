@@ -543,6 +543,8 @@ for mod in $SINGULAR_MODULES; do
     emmake make -C "Singular/dyn_modules/$mod" -j8
 done
 
+bash "$BASEDIR/emscripten/gen_all_lib.sh"
+
 cd Singular
 
 MODULE_LIBS=""
