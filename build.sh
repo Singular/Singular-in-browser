@@ -688,7 +688,7 @@ em++ wasm_patch.c tesths.o utils.o \
     -lmathicgb -lmathic -lmemtailor \
     -lspasm -lopenblas -lgivaro \
     -lTOPCOM -lnormaliz -lccluster -lflint -lmpfr -lcddgmp -lntl \
-    -l4ti2int64 -l4ti2int32 -l4ti2common -lzsolve \
+    -l4ti2int64 -l4ti2int32 -l4ti2common -l4ti2util -lzsolve \
     -lglpk -lgmp \
     -s ASYNCIFY=1 \
     -s TOTAL_STACK=64MB \
