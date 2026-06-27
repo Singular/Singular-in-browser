@@ -447,6 +447,120 @@ fi
     cp "$AUX_BUILD/spasm/src/libspasm.a" "$AUX_PREFIX/lib/libspasm.a"
 )
 
+# --- GLPK ---
+(
+    mkdir -p "$AUX_BUILD/glpk"
+    cd "$AUX_BUILD/glpk"
+    
+    if [[ ! -d "$EXTERN_DIR/glpk" ]]; then
+        echo "Downloading GLPK source..."
+        mkdir -p "$EXTERN_DIR/glpk"
+        curl -sL "https://ftp.gnu.org/gnu/glpk/glpk-5.0.tar.gz" | tar -xz -C "$EXTERN_DIR/glpk" --strip-components=1
+    fi
+
+    cd "$EXTERN_DIR/glpk"
+    
+    if [[ ! -f configure ]]; then
+        echo "Bootstrapping GLPK..."
+        chmod +x autogen.sh
+        ./autogen.sh
+    fi
+    
+    cd "$AUX_BUILD/glpk"
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CFLAGS="-O2 -fexceptions" \
+        emconfigure "$EXTERN_DIR/glpk/configure" \
+            --build=i686-pc-linux-gnu \
+            --host=none \
+            --with-gmp \
+            --disable-shared \
+            --enable-static \
+            --prefix="$AUX_PREFIX"
+    fi
+    
+    emmake make -j8
+    emmake make install
+)
+
+# --- 4TI2 ---
+(
+    mkdir -p "$AUX_BUILD/4ti2"
+    cd "$AUX_BUILD/4ti2"
+    
+    if [[ ! -d "$EXTERN_DIR/4ti2" ]]; then
+        echo "Cloning 4ti2..."
+        git clone https://github.com/4ti2/4ti2.git "$EXTERN_DIR/4ti2"
+    fi
+
+    cd "$EXTERN_DIR/4ti2"
+    
+    if [[ ! -f configure ]]; then
+        echo "Bootstrapping 4ti2..."
+        chmod +x autogen.sh
+        ./autogen.sh
+    fi
+
+    if ! grep -q "4ti2 wasm patch" configure; then
+        cp configure configure.orig
+
+        sed -i '/checking whether -ftrapv actually seems to work for int\.\.\./,/^then :$/ s/if test "\$cross_compiling" = yes/if false/' configure
+        sed -i '/checking whether -ftrapv actually seems to work for long long\.\.\./,/^then :$/ s/if test "\$cross_compiling" = yes/if false/' configure
+        sed -i '1i # 4ti2 wasm patch applied' configure
+    fi
+
+        cd "$AUX_BUILD/4ti2"
+
+    if [[ ! -f Makefile ]]; then
+        CPPFLAGS="-I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CFLAGS="-O2 -fexceptions" \
+        CXXFLAGS="-O2 -fexceptions" \
+        emconfigure bash "$EXTERN_DIR/4ti2/configure" \
+            --build=i686-pc-linux-gnu \
+            --host=wasm32-unknown-emscripten \
+            --with-gmp="$AUX_PREFIX" \
+            --with-glpk="$AUX_PREFIX" \
+            --disable-shared \
+            --enable-static \
+            --prefix="$AUX_PREFIX"
+    fi
+    
+    emmake make -j8
+    emmake make install
+)
+
+# --- CCLUSTER ---
+(
+    mkdir -p "$AUX_BUILD/ccluster"
+    cd "$AUX_BUILD/ccluster"
+    
+    if [[ ! -d "$EXTERN_DIR/ccluster" ]]; then
+        echo "Cloning Ccluster..."
+        git clone https://github.com/rimbach/Ccluster.git "$EXTERN_DIR/ccluster"
+    fi
+
+    cd "$EXTERN_DIR/ccluster"
+    
+    if [[ ! -f Makefile ]]; then
+
+        CFLAGS="-O2 -fexceptions -I$AUX_PREFIX/include" \
+        LDFLAGS="-L$AUX_PREFIX/lib" \
+        CC="emcc -fexceptions" \
+        emconfigure ./configure \
+            --prefix="$AUX_PREFIX" \
+            --with-gmp="$AUX_PREFIX" \
+            --with-mpfr="$AUX_PREFIX" \
+            --with-flint="$AUX_PREFIX" 
+    fi
+    
+    emmake make static -j8
+    
+    emmake make install CCLUSTER_SHARED=0 CCLUSTER_STATIC=1
+)
+
 # --- TOPCOM ---
 (
     mkdir -p "$AUX_BUILD/topcom"
@@ -515,6 +629,7 @@ emconfigure ./configure \
     --with-normaliz="$AUX_PREFIX" \
     --with-topcom="$AUX_PREFIX" \
     --with-mathicgb="$AUX_PREFIX" \
+    --with-ccluster="$AUX_PREFIX" \
     --disable-shared \
     --enable-static \
     --without-pic \
@@ -530,8 +645,8 @@ emconfigure ./configure \
     MATHICGB_LIBS="-L$AUX_PREFIX/lib -lmathicgb -lmathic -lmemtailor" \
     CXX="em++ -fexceptions" \
     CC="emcc -fexceptions" \
-    CXXFLAGS="-O2 -fexceptions -D_GNU_SOURCE -std=c++14 -I$AUX_PREFIX/include -I$AUX_PREFIX/include/cddlib" \
-    CFLAGS="-O2 -fexceptions -D_GNU_SOURCE -I$AUX_PREFIX/include -I$AUX_PREFIX/include/cddlib" \
+    CXXFLAGS="-O2 -fexceptions -D_GNU_SOURCE -std=c++14 -I$AUX_PREFIX/include -I$AUX_PREFIX/include/flint -I$AUX_PREFIX/include/cddlib" \
+    CFLAGS="-O2 -fexceptions -D_GNU_SOURCE -I$AUX_PREFIX/include -I$AUX_PREFIX/include/flint -I$AUX_PREFIX/include/cddlib" \
     LDFLAGS="-L$AUX_PREFIX/lib -L$BASEDIR -lwasm_patch -fexceptions -s ASYNCIFY=1 -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=0 -O2"
 
 emmake make -j8 -k || true
@@ -543,9 +658,11 @@ for mod in $SINGULAR_MODULES; do
     emmake make -C "Singular/dyn_modules/$mod" -j8
 done
 
-bash "$BASEDIR/emscripten/gen_all_lib.sh"
-
 cd Singular
+
+emmake make all.lib
+
+cp -f all.lib LIB/
 
 MODULE_LIBS=""
 
@@ -570,8 +687,9 @@ em++ wasm_patch.c tesths.o utils.o \
     -L"$AUX_PREFIX/lib" \
     -lmathicgb -lmathic -lmemtailor \
     -lspasm -lopenblas -lgivaro \
-    -lTOPCOM -lnormaliz -lflint -lmpfr -lcddgmp -lntl \
-    -lgmp \
+    -lTOPCOM -lnormaliz -lccluster -lflint -lmpfr -lcddgmp -lntl \
+    -l4ti2int64 -l4ti2int32 -l4ti2common -lzsolve \
+    -lglpk -lgmp \
     -s ASYNCIFY=1 \
     -s TOTAL_STACK=64MB \
     -s INITIAL_MEMORY=1024MB \
