@@ -16,4 +16,5 @@ public/vendor/xterm/xterm.js
 public/vendor/xterm/addon-fit.js
 public/vendor/xterm-pty/index.mjs
 public/vendor/xterm-pty/workerTools.js
+public/vendor/katex/
 public/vendor/versions.json

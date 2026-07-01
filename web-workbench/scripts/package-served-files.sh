@@ -29,11 +29,23 @@ RUNTIME_ASSETS=(
   vendor/xterm/addon-fit.js
   vendor/xterm-pty/index.mjs
   vendor/xterm-pty/workerTools.js
+  vendor/katex/katex.min.css
+  vendor/katex/katex.min.js
   engine/engine-manifest.json
   engine/Singular.js
   engine/Singular.wasm
   engine/Singular.data
 )
+
+if [[ -d "${PUBLIC_DIR}/vendor/katex/fonts" ]]; then
+  while IFS= read -r font_path; do
+    RUNTIME_ASSETS+=("${font_path#${PUBLIC_DIR}/}")
+  done < <(
+    find "${PUBLIC_DIR}/vendor/katex/fonts" -type f \
+      \( -name '*.woff2' -o -name '*.woff' -o -name '*.ttf' \) \
+      | LC_ALL=C sort
+  )
+fi
 
 mkdir -p "${OUT_DIR}"
 rm -rf "${STAGE_DIR}"

@@ -13,6 +13,7 @@ import {
   deleteFile,
   textExtension
 } from './workspace-db.js';
+import { TUTORIALS, TUTORIAL_CATEGORIES } from '../tutorials/tutorials.js';
 
 const CONTROL = '__singularControl';
 const DEFAULT_SCRIPT = `ring r = 0,(x,y),dp;\nideal I = x2-y3, x3-y5;\nideal G = std(I);\nG;\nwrite(":w /workspace/example-output.txt", "Groebner basis of I:", G);\n`;
@@ -25,19 +26,32 @@ const MAX_IMPORT_JSON_BYTES = 50 * 1024 * 1024;
 const SESSION_FS_TIMEOUT_MS = 8000;
 const VENDOR_MANIFEST = 'vendor/versions.json';
 const ENGINE_MANIFEST = 'engine/engine-manifest.json';
+const MANUSCRIPT_URL = 'https://agag-jboehm.math.rptu.de/~boehm/ca.pdf';
 const TRUST_CONFIG = Object.freeze(globalThis.SINGULAR_WORKBENCH_TRUST || {});
 const EXPECTED_VENDOR_ASSETS = Object.freeze([
   'vendor/xterm/xterm.css',
   'vendor/xterm/xterm.js',
   'vendor/xterm/addon-fit.js',
   'vendor/xterm-pty/index.mjs',
-  'vendor/xterm-pty/workerTools.js'
+  'vendor/xterm-pty/workerTools.js',
+  'vendor/katex/katex.min.css',
+  'vendor/katex/katex.min.js'
 ]);
 const EXPECTED_ENGINE_ASSETS = Object.freeze([
   'engine/Singular.js',
   'engine/Singular.wasm',
   'engine/Singular.data'
 ]);
+const TUTORIAL_BY_ID = new Map(TUTORIALS.map(tutorial => [tutorial.id, tutorial]));
+const TUTORIAL_CATEGORY_LIST = Object.freeze(
+  TUTORIAL_CATEGORIES
+    .map(category => Object.freeze({
+      id: category.id,
+      title: category.title,
+      tutorials: Object.freeze(category.tutorialIds.map(id => TUTORIAL_BY_ID.get(id)).filter(Boolean))
+    }))
+    .filter(category => category.tutorials.length)
+);
 const IS_APPLE_PLATFORM = /mac|iphone|ipad|ipod/i.test(
   navigator.userAgentData?.platform || navigator.platform || ''
 );
@@ -64,37 +78,78 @@ const SINGULAR_KEYWORDS = Object.freeze(new Set([
 const SINGULAR_BUILTINS = Object.freeze(new Set([
   'attrib',
   'basering',
+  'betti',
   'bigint',
   'def',
+  'diff',
+  'division',
+  'eliminate',
   'execute',
   'groebner',
+  'highcorner',
+  'hilbPoly',
   'ideal',
   'int',
   'intmat',
   'intvec',
+  'intersect',
+  'irreddecMon',
+  'jacob',
+  'kernel',
+  'lead',
+  'leadcoef',
+  'leadmonom',
   'lib',
   'LIB',
   'link',
   'list',
   'matrix',
+  'maxideal',
+  'minor',
+  'minres',
   'module',
+  'modulo',
+  'normal',
   'number',
   'option',
   'poly',
+  'primdecGTZ',
   'print',
   'qring',
   'quotient',
+  'radical',
+  'reduce',
+  'res',
   'resolution',
   'ring',
   'setring',
   'size',
+  'slocus',
+  'sres',
   'std',
   'string',
+  'subst',
+  'syz',
   'timer',
   'typeof',
   'vector',
   'write'
 ]));
+
+function ensureTutorialCategoryElement() {
+  const existing = document.getElementById('tutorial-category');
+  if (existing) return existing;
+  const tutorialSelect = document.getElementById('tutorial-select');
+  const select = document.createElement('select');
+  select.id = 'tutorial-category';
+  select.className = 'text-input';
+  const label = document.createElement('label');
+  label.htmlFor = select.id;
+  label.className = 'small muted';
+  label.textContent = 'Category:';
+  if (tutorialSelect) tutorialSelect.before(label, select);
+  return select;
+}
 
 const el = Object.freeze({
   statusDot: document.getElementById('engine-status-dot'),
@@ -107,6 +162,17 @@ const el = Object.freeze({
   jsonInput: document.getElementById('workspace-json-input'),
   pathInput: document.getElementById('path-input'),
   selectedPath: document.getElementById('selected-path'),
+  tabEditor: document.getElementById('tab-editor'),
+  tabTutorials: document.getElementById('tab-tutorials'),
+  editorTabPanel: document.getElementById('editor-tab-panel'),
+  tutorialTabPanel: document.getElementById('tutorial-tab-panel'),
+  tutorialCategory: ensureTutorialCategoryElement(),
+  tutorialSelect: document.getElementById('tutorial-select'),
+  tutorialSummary: document.getElementById('tutorial-summary'),
+  tutorialAppendEditor: document.getElementById('tutorial-append-editor'),
+  tutorialPasteAll: document.getElementById('tutorial-paste-all'),
+  tutorialMultiline: document.getElementById('tutorial-multiline'),
+  tutorialContent: document.getElementById('tutorial-content'),
   editor: document.getElementById('editor'),
   editorHighlight: document.getElementById('editor-highlight'),
   output: document.getElementById('output-log'),
@@ -152,8 +218,13 @@ let terminalInputMethod = '';
 let selectedPath = '/workspace/example.sing';
 let folderHandle = null;
 let terminalCurrentLine = '';
+let terminalInputCursor = 0;
 let terminalHistoryCursor = null;
 let terminalHistoryDraft = '';
+let terminalKeydownHandler = null;
+let terminalPasteHandler = null;
+let activeWorkbenchTab = 'editor';
+let currentTutorialSteps = [];
 let workerRequestId = 0;
 let ptyModulePromise = null;
 let vendorVerified = false;
@@ -366,6 +437,457 @@ function setEditorValue(value, { focus = false } = {}) {
   if (focus) el.editor.focus();
 }
 
+function setWorkbenchTab(tab) {
+  activeWorkbenchTab = tab === 'tutorials' ? 'tutorials' : 'editor';
+  const showTutorials = activeWorkbenchTab === 'tutorials';
+  el.tabEditor.setAttribute('aria-selected', showTutorials ? 'false' : 'true');
+  el.tabTutorials.setAttribute('aria-selected', showTutorials ? 'true' : 'false');
+  el.tabEditor.tabIndex = showTutorials ? -1 : 0;
+  el.tabTutorials.tabIndex = showTutorials ? 0 : -1;
+  el.editorTabPanel.hidden = showTutorials;
+  el.tutorialTabPanel.hidden = !showTutorials;
+  if (showTutorials) el.tutorialSelect.focus();
+  else el.editor.focus();
+}
+
+function safeTutorialImageSrc(src) {
+  const value = String(src || '').trim();
+  if (!/^tutorials\/images\/[-A-Za-z0-9_./]+\.(?:jpe?g|png|webp)$/i.test(value)) return '';
+  if (value.split('/').includes('..')) return '';
+  return value;
+}
+
+const LATEX_SYMBOLS = Object.freeze({
+  A: 'A',
+  C: 'C',
+  F: 'F',
+  K: 'K',
+  P: 'P',
+  Q: 'Q',
+  R: 'R',
+  Z: 'Z',
+  bar: '',
+  cap: '∩',
+  cdot: '·',
+  colon: ':',
+  cong: '≅',
+  dots: '…',
+  geq: '≥',
+  infty: '∞',
+  in: '∈',
+  langle: '⟨',
+  ldots: '…',
+  leq: '≤',
+  mapsto: '↦',
+  mathcal: '',
+  mathfrak: '',
+  mathbb: '',
+  neq: '≠',
+  operatorname: '',
+  op: '⊕',
+  oplus: '⊕',
+  otimes: '⊗',
+  qquad: '\u2003\u2003',
+  quad: '\u2003',
+  rangle: '⟩',
+  rightarrow: '→',
+  sqrt: '√',
+  subset: '⊂',
+  times: '×',
+  xrightarrow: '→',
+  to: '→'
+});
+
+const MATHBB_SYMBOLS = Object.freeze({
+  A: '𝔸',
+  C: 'ℂ',
+  F: '𝔽',
+  K: '𝕂',
+  N: 'ℕ',
+  P: 'ℙ',
+  Q: 'ℚ',
+  R: 'ℝ',
+  Z: 'ℤ'
+});
+
+const MATHFRAK_SYMBOLS = Object.freeze({
+  m: '𝔪'
+});
+
+function replaceLatexCommands(text) {
+  return String(text || '')
+    .replace(/\\left/g, '')
+    .replace(/\\right/g, '')
+    .replace(/\\[,;:]/g, '\u2009')
+    .replace(/\\!/g, '')
+    .replace(/\\([A-Za-z]+)/g, (_, command) => LATEX_SYMBOLS[command] ?? command);
+}
+
+function renderMathSegment(text) {
+  let html = '';
+  for (const char of String(text || '')) {
+    if (/^[A-Za-z]$/.test(char)) {
+      html += `<var>${escapeHtml(char)}</var>`;
+    } else if (char === '-') {
+      html += '−';
+    } else if (char === '*') {
+      html += '·';
+    } else {
+      html += escapeHtml(char);
+    }
+  }
+  return html;
+}
+
+function renderMathText(text) {
+  const tokenPattern = /(\uE100\d+\uE101)/g;
+  return String(text || '')
+    .split(tokenPattern)
+    .map(part => /^\uE100\d+\uE101$/.test(part) ? part : renderMathSegment(part))
+    .join('');
+}
+
+function renderLatexContents(math) {
+  const fragments = [];
+  const stash = html => {
+    const token = `\uE100${fragments.length}\uE101`;
+    fragments.push(html);
+    return token;
+  };
+  let value = String(math || '').trim();
+  value = value.replace(/\\operatorname\{([^{}]+)\}/g, (_, operator) => {
+    return stash(`<span class="math-op">${escapeHtml(operator)}</span>`);
+  });
+  value = value.replace(/\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}/g, (_, body) => {
+    const rows = String(body).split(/\\\\/).map(row => row.split('&').map(cell => renderLatexContents(cell.trim())));
+    return stash(`<span class="math-matrix">${rows.map(row => `<span class="math-matrix-row">${row.map(cell => `<span>${cell}</span>`).join('')}</span>`).join('')}</span>`);
+  });
+  value = value.replace(/\\bar\{([^{}]+)\}/g, (_, body) => {
+    return stash(`<span class="math-overline">${renderLatexContents(body)}</span>`);
+  });
+  value = value.replace(/\\bar\s+([A-Za-z])/g, (_, body) => {
+    return stash(`<span class="math-overline">${renderLatexContents(body)}</span>`);
+  });
+  value = value.replace(/\\sqrt\{([^{}]+)\}/g, (_, body) => {
+    return stash(`<span class="math-root"><span>√</span><span>${renderLatexContents(body)}</span></span>`);
+  });
+  value = value.replace(/\\xrightarrow\{([^{}]+)\}/g, (_, label) => {
+    return stash(`<span class="math-arrow">→<sup>${renderLatexContents(label)}</sup></span>`);
+  });
+  value = value.replace(/\\mathbb\{([A-Za-z])\}/g, (_, symbol) => MATHBB_SYMBOLS[symbol] || symbol);
+  value = value.replace(/\\mathbb\s+([A-Za-z])/g, (_, symbol) => MATHBB_SYMBOLS[symbol] || symbol);
+  value = value.replace(/\\mathfrak\{([A-Za-z])\}/g, (_, symbol) => MATHFRAK_SYMBOLS[symbol] || symbol);
+  value = value.replace(/\\mathfrak\s+([A-Za-z])/g, (_, symbol) => MATHFRAK_SYMBOLS[symbol] || symbol);
+  value = value.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, (_, numerator, denominator) => {
+    return stash(`<span class="math-frac"><span>${renderLatexContents(numerator)}</span><span>${renderLatexContents(denominator)}</span></span>`);
+  });
+  value = value.replace(/\\frac\s*([A-Za-z0-9])\s*([A-Za-z0-9])/g, (_, numerator, denominator) => {
+    return stash(`<span class="math-frac"><span>${renderLatexContents(numerator)}</span><span>${renderLatexContents(denominator)}</span></span>`);
+  });
+  value = value.replace(/([_^])\{([^{}]+)\}/g, (_, marker, body) => {
+    const tag = marker === '^' ? 'sup' : 'sub';
+    return stash(`<${tag}>${renderLatexContents(body)}</${tag}>`);
+  });
+  value = value.replace(/([_^])([A-Za-z0-9+-])/g, (_, marker, body) => {
+    const tag = marker === '^' ? 'sup' : 'sub';
+    return stash(`<${tag}>${renderLatexContents(body)}</${tag}>`);
+  });
+  value = replaceLatexCommands(value);
+  let html = renderMathText(value);
+  for (const [index, fragment] of fragments.entries()) {
+    html = html.replaceAll(`\uE100${index}\uE101`, fragment);
+  }
+  return html;
+}
+
+function renderLatexFallback(math) {
+  return `<span class="tutorial-math">${renderLatexContents(math)}</span>`;
+}
+
+function renderLatex(math, { displayMode = false } = {}) {
+  const katex = globalThis.katex;
+  if (typeof katex?.renderToString === 'function') {
+    try {
+      return katex.renderToString(String(math || '').trim(), {
+        displayMode,
+        throwOnError: false,
+        strict: 'ignore',
+        trust: false,
+        output: 'htmlAndMathml'
+      });
+    } catch {
+      return renderLatexFallback(math);
+    }
+  }
+  return renderLatexFallback(math);
+}
+
+function renderLatexInline(math) {
+  return renderLatex(math);
+}
+
+function renderInlineMarkdown(text) {
+  const fragments = [];
+  const stash = html => {
+    const token = `\uE000${fragments.length}\uE001`;
+    fragments.push(html);
+    return token;
+  };
+  let source = String(text || '');
+  source = source.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  source = source.replace(/\\\((.*?)\\\)/g, (_, math) => stash(renderLatexInline(math)));
+  source = source.replace(/\$([^$]+)\$/g, (_, math) => stash(renderLatexInline(math)));
+  let html = escapeHtml(source).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  for (const [index, fragment] of fragments.entries()) {
+    html = html.replaceAll(`\uE000${index}\uE001`, fragment);
+  }
+  return html;
+}
+
+function renderTutorialMarkdown(markdown) {
+  const lines = String(markdown || '').split(/\r?\n/);
+  const html = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${renderInlineMarkdown(paragraph.join(' '))}</p>`);
+    paragraph = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      continue;
+    }
+    const displayMath = /^\$\$([\s\S]+)\$\$$/.exec(trimmed);
+    if (displayMath) {
+      flushParagraph();
+      html.push(`<div class="tutorial-math-display">${renderLatex(displayMath[1], { displayMode: true })}</div>`);
+      continue;
+    }
+    const image = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(trimmed);
+    if (image) {
+      flushParagraph();
+      const src = safeTutorialImageSrc(image[2]);
+      if (src) {
+        const alt = escapeHtml(image[1] || 'Tutorial figure');
+        html.push(`<figure class="tutorial-figure"><img src="${src}" alt="${alt}" loading="lazy"><figcaption>${alt}</figcaption></figure>`);
+      }
+      continue;
+    }
+    const heading = /^(#{2,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length + 1;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    paragraph.push(trimmed);
+  }
+  flushParagraph();
+  return html.join('');
+}
+
+function tutorialBlocks(tutorial) {
+  if (Array.isArray(tutorial?.blocks)) return tutorial.blocks;
+  return [{ code: tutorial?.code, source: tutorial?.source }];
+}
+
+function tutorialCodeText(tutorial) {
+  return tutorialBlocks(tutorial)
+    .map(block => String(block.code || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function tutorialPhysicalLineSteps(tutorial) {
+  const steps = [];
+  for (const block of tutorialBlocks(tutorial)) {
+    const source = block.source || tutorial.source || '';
+    const lines = String(block.code || '').trim().split(/\r?\n/);
+    for (const [lineIndex, codeLine] of lines.entries()) {
+      const code = codeLine.replace(/\s+$/, '');
+      if (!code.trim()) continue;
+      steps.push({
+        code,
+        source,
+        startLine: lineIndex + 1,
+        endLine: lineIndex + 1,
+        lineLabel: String(lineIndex + 1)
+      });
+    }
+  }
+  return steps;
+}
+
+function singularStatementEnds(line) {
+  return /;\s*(?:\/\/.*)?$/.test(String(line || '').trim());
+}
+
+function flushTutorialStep(steps, pending, source, startLine, endLine) {
+  if (!pending.length) return;
+  steps.push({
+    code: pending.join('\n'),
+    source,
+    startLine,
+    endLine,
+    lineLabel: startLine === endLine ? String(startLine) : `${startLine}-${endLine}`
+  });
+}
+
+function tutorialStatementSteps(tutorial) {
+  const steps = [];
+  for (const block of tutorialBlocks(tutorial)) {
+    const source = block.source || tutorial.source || '';
+    const lines = String(block.code || '').trim().split(/\r?\n/);
+    let pending = [];
+    let startLine = 0;
+    let endLine = 0;
+    for (const [lineIndex, codeLine] of lines.entries()) {
+      const code = codeLine.replace(/\s+$/, '');
+      if (!code.trim()) continue;
+      if (!pending.length) startLine = lineIndex + 1;
+      endLine = lineIndex + 1;
+      pending.push(code);
+      if (singularStatementEnds(code)) {
+        flushTutorialStep(steps, pending, source, startLine, endLine);
+        pending = [];
+      }
+    }
+    flushTutorialStep(steps, pending, source, startLine, endLine);
+  }
+  return steps;
+}
+
+function buildTutorialSteps(tutorial) {
+  return el.tutorialMultiline?.checked
+    ? tutorialStatementSteps(tutorial)
+    : tutorialPhysicalLineSteps(tutorial);
+}
+
+function tutorialStepTerminalCode(step) {
+  return String(step?.code || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function createTutorialCodeStepButton(step, index, tutorial) {
+  const button = document.createElement('button');
+  const lineNumber = document.createElement('span');
+  const scroll = document.createElement('span');
+  const code = document.createElement('code');
+  button.type = 'button';
+  button.className = 'tutorial-code-line-button';
+  if (step.startLine !== step.endLine) button.classList.add('is-multiline');
+  button.setAttribute('aria-label', `Paste tutorial lines ${step.lineLabel} from ${tutorial.title} into the Singular terminal`);
+  button.title = step.source ? `Paste lines ${step.lineLabel} from ${step.source}` : `Paste lines ${step.lineLabel}`;
+  lineNumber.className = 'tutorial-code-line-number';
+  lineNumber.textContent = step.lineLabel;
+  scroll.className = 'tutorial-code-scroll';
+  code.innerHTML = highlightSingular(step.code || '');
+  scroll.append(code);
+  button.append(lineNumber, scroll);
+  button.addEventListener('click', () => runAction('Paste tutorial step', () => sendTutorialCode(index)));
+  button.addEventListener('keydown', scrollTutorialCodeLineWithKeyboard);
+  return button;
+}
+
+function scrollTutorialCodeLineWithKeyboard(event) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  const scroll = event.currentTarget.querySelector('.tutorial-code-scroll');
+  if (!scroll || scroll.scrollWidth <= scroll.clientWidth + 1) return;
+  event.preventDefault();
+  scroll.scrollLeft += event.key === 'ArrowLeft' ? -56 : 56;
+}
+
+function updateTutorialLineOverflow() {
+  for (const button of el.tutorialContent.querySelectorAll('.tutorial-code-line-button')) {
+    const scroll = button.querySelector('.tutorial-code-scroll');
+    const overflowing = Boolean(scroll && scroll.scrollWidth > scroll.clientWidth + 1);
+    button.classList.toggle('is-overflowing', overflowing);
+  }
+}
+
+function selectedTutorialCategory() {
+  const index = Math.max(0, Math.min(TUTORIAL_CATEGORY_LIST.length - 1, Number(el.tutorialCategory.value || 0)));
+  return TUTORIAL_CATEGORY_LIST[index] || { id: 'all', title: 'Tutorials', tutorials: TUTORIALS };
+}
+
+function currentTutorialList() {
+  return selectedTutorialCategory().tutorials || [];
+}
+
+function renderTutorialCategories() {
+  el.tutorialCategory.textContent = '';
+  for (const [index, category] of TUTORIAL_CATEGORY_LIST.entries()) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = category.title;
+    el.tutorialCategory.append(option);
+  }
+}
+
+function renderTutorialOptions(preferredTutorialId = '') {
+  const tutorials = currentTutorialList();
+  el.tutorialSelect.textContent = '';
+  for (const [index, tutorial] of tutorials.entries()) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = tutorial.title;
+    el.tutorialSelect.append(option);
+  }
+  const preferredIndex = tutorials.findIndex(tutorial => tutorial.id === preferredTutorialId);
+  el.tutorialSelect.value = String(Math.max(0, preferredIndex));
+}
+
+function renderTutorial() {
+  const category = selectedTutorialCategory();
+  const tutorials = category.tutorials || [];
+  const index = Math.max(0, Math.min(tutorials.length - 1, Number(el.tutorialSelect.value || 0)));
+  const tutorial = tutorials[index];
+  currentTutorialSteps = [];
+  el.tutorialContent.textContent = '';
+  if (!tutorial) {
+    el.tutorialSummary.textContent = 'No tutorials available.';
+    return;
+  }
+  el.tutorialSummary.textContent = '';
+  const source = document.createElement('span');
+  source.textContent = tutorial.source || '';
+  const separator = document.createElement('span');
+  separator.textContent = ' - ';
+  const link = document.createElement('a');
+  const page = Number(tutorial.pdfPage || 1);
+  link.href = `${MANUSCRIPT_URL}#page=${Math.max(1, page)}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = 'manuscript';
+  const count = document.createElement('span');
+  count.textContent = ` - ${tutorials.length} ${tutorials.length === 1 ? 'tutorial' : 'tutorials'} in ${category.title}`;
+  el.tutorialSummary.append(source, separator, link, count);
+  const markdown = renderTutorialMarkdown(tutorial.markdown);
+  if (markdown) {
+    const intro = document.createElement('div');
+    intro.className = 'tutorial-markdown';
+    intro.innerHTML = markdown;
+    el.tutorialContent.append(intro);
+  }
+
+  currentTutorialSteps = buildTutorialSteps(tutorial);
+  const list = document.createElement('div');
+  list.className = 'tutorial-code-list';
+  list.setAttribute('aria-label', `Code steps for ${tutorial.title}`);
+  for (const [stepIndex, step] of currentTutorialSteps.entries()) {
+    list.append(createTutorialCodeStepButton(step, stepIndex, tutorial));
+  }
+  el.tutorialContent.append(list);
+  requestAnimationFrame(updateTutorialLineOverflow);
+}
+
 function rememberTerminalCommand(line) {
   const command = String(line || '').trimEnd();
   if (!command.trim()) return;
@@ -376,6 +898,30 @@ function rememberTerminalCommand(line) {
 
 function rememberTerminalCommands(text) {
   for (const line of String(text || '').split(/\r?\n/)) rememberTerminalCommand(line);
+}
+
+function terminalLineChars(value = terminalCurrentLine) {
+  return Array.from(String(value || ''));
+}
+
+function terminalLineLength(value = terminalCurrentLine) {
+  return terminalLineChars(value).length;
+}
+
+function syncTerminalLineDisciplineInput() {
+  // Keyboard command-line editing is handled locally in the browser. The PTY
+  // line discipline receives only the completed line on Enter, so its internal
+  // canonical buffer must not be mirrored here.
+}
+
+function setTerminalCurrentLine(value, cursor = terminalLineLength(value), { sync = true } = {}) {
+  terminalCurrentLine = String(value || '');
+  terminalInputCursor = Math.max(0, Math.min(terminalLineLength(), cursor));
+  if (sync) syncTerminalLineDisciplineInput();
+}
+
+function resetTerminalCurrentLine(options = {}) {
+  setTerminalCurrentLine('', 0, options);
 }
 
 function resetTerminalLineNavigation() {
@@ -400,22 +946,162 @@ function writeTerminalKeystrokes(text) {
   return writeTerminalInput(value, { quiet: true });
 }
 
+function scrollTerminalToBottomSoon() {
+  const scrollAndRefresh = () => {
+    terminal?.scrollToBottom?.();
+    terminal?.refresh?.(0, Math.max(0, (terminal?.rows || 1) - 1));
+  };
+  scrollAndRefresh();
+  requestAnimationFrame(scrollAndRefresh);
+  for (const delayMs of [50, 150, 500, 1200]) {
+    setTimeout(scrollAndRefresh, delayMs);
+  }
+}
+
+function terminalCursorSequence(direction, columns) {
+  const count = Math.max(0, Math.floor(columns));
+  return count ? `\x1b[${count}${direction}` : '';
+}
+
+function moveTerminalInputCursorTo(position) {
+  const length = terminalLineLength();
+  const next = Math.max(0, Math.min(length, position));
+  const delta = next - terminalInputCursor;
+  if (delta < 0) terminal?.write?.(terminalCursorSequence('D', -delta));
+  else if (delta > 0) terminal?.write?.(terminalCursorSequence('C', delta));
+  terminalInputCursor = next;
+  return true;
+}
+
+function moveTerminalInputCursorToEnd() {
+  return moveTerminalInputCursorTo(terminalLineLength());
+}
+
+function clearTerminalInputLine() {
+  moveTerminalInputCursorToEnd();
+  const length = terminalLineLength();
+  if (length) {
+    terminal?.write?.(`${terminalCursorSequence('D', length)}${' '.repeat(length)}${terminalCursorSequence('D', length)}`);
+  }
+  resetTerminalCurrentLine();
+}
+
+function insertTerminalInputAtCursor(text, { resetNavigation = true } = {}) {
+  const value = String(text || '');
+  const insertLength = terminalLineLength(value);
+  if (!insertLength) return false;
+  const chars = terminalLineChars();
+  const before = chars.slice(0, terminalInputCursor).join('');
+  const after = chars.slice(terminalInputCursor).join('');
+  setTerminalCurrentLine(`${before}${value}${after}`, terminalInputCursor + insertLength);
+  terminal?.write?.(`${value}${after}${terminalCursorSequence('D', terminalLineLength(after))}`);
+  if (resetNavigation) resetTerminalLineNavigation();
+  return true;
+}
+
+function deleteTerminalInputBeforeCursor() {
+  if (terminalInputCursor <= 0) return true;
+  const chars = terminalLineChars();
+  const after = chars.slice(terminalInputCursor).join('');
+  chars.splice(terminalInputCursor - 1, 1);
+  setTerminalCurrentLine(chars.join(''), terminalInputCursor - 1);
+  terminal?.write?.(`${terminalCursorSequence('D', 1)}${after} ${terminalCursorSequence('D', terminalLineLength(after) + 1)}`);
+  resetTerminalLineNavigation();
+  return true;
+}
+
+function deleteTerminalInputAtCursor() {
+  const chars = terminalLineChars();
+  if (terminalInputCursor >= chars.length) return true;
+  const after = chars.slice(terminalInputCursor + 1).join('');
+  chars.splice(terminalInputCursor, 1);
+  setTerminalCurrentLine(chars.join(''), terminalInputCursor);
+  terminal?.write?.(`${after} ${terminalCursorSequence('D', terminalLineLength(after) + 1)}`);
+  resetTerminalLineNavigation();
+  return true;
+}
+
+function submitTerminalInputLine() {
+  const line = terminalCurrentLine;
+  moveTerminalInputCursorToEnd();
+  terminal?.write?.('\r\n');
+  rememberTerminalCommand(line);
+  resetTerminalCurrentLine();
+  resetTerminalLineNavigation();
+  scrollTerminalToBottomSoon();
+  if (writePtyServerInput(`${line}\n`)) return true;
+  return writeTerminalKeystrokes(`${line}\r`);
+}
+
+function consumeTerminalEvent(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
+}
+
+function handleTerminalEditingKey(event) {
+  const key = event.key || '';
+  const code = event.code || '';
+  if (event.altKey || event.ctrlKey || event.metaKey) return false;
+  if (key === 'ArrowUp' || key === 'Up' || code === 'ArrowUp') {
+    navigateTerminalHistory(-1);
+    return true;
+  }
+  if (key === 'ArrowDown' || key === 'Down' || code === 'ArrowDown') {
+    navigateTerminalHistory(1);
+    return true;
+  }
+  if (key === 'ArrowLeft' || key === 'Left' || code === 'ArrowLeft') return moveTerminalInputCursorTo(terminalInputCursor - 1);
+  if (key === 'ArrowRight' || key === 'Right' || code === 'ArrowRight') return moveTerminalInputCursorTo(terminalInputCursor + 1);
+  if (key === 'Home' || code === 'Home') return moveTerminalInputCursorTo(0);
+  if (key === 'End' || code === 'End') return moveTerminalInputCursorToEnd();
+  if (key === 'Delete' || code === 'Delete') return deleteTerminalInputAtCursor();
+  if (key === 'Enter' || code === 'Enter' || code === 'NumpadEnter') return submitTerminalInputLine();
+  if (key === 'Backspace' || code === 'Backspace') return deleteTerminalInputBeforeCursor();
+  if (event.key?.length === 1) return insertTerminalInputAtCursor(event.key);
+  return false;
+}
+
+function handleTerminalKeydownCapture(event) {
+  if (handleTerminalEditingKey(event)) consumeTerminalEvent(event);
+}
+
+function insertPastedTerminalText(text) {
+  const value = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!value) return false;
+  const parts = value.split('\n');
+  for (const [index, part] of parts.entries()) {
+    if (part) insertTerminalInputAtCursor(part);
+    if (index < parts.length - 1) submitTerminalInputLine();
+  }
+  return true;
+}
+
+function handleTerminalPasteCapture(event) {
+  const text = event.clipboardData?.getData('text/plain') || '';
+  if (!text) return;
+  consumeTerminalEvent(event);
+  insertPastedTerminalText(text);
+}
+
 function noteTerminalData(data) {
   const text = String(data || '');
   if (!text || text.includes('\x1b')) return;
   for (const char of text) {
     if (char === '\r' || char === '\n') {
       rememberTerminalCommand(terminalCurrentLine);
-      terminalCurrentLine = '';
+      resetTerminalCurrentLine({ sync: false });
       resetTerminalLineNavigation();
     } else if (char === '\x7f' || char === '\b') {
-      terminalCurrentLine = Array.from(terminalCurrentLine).slice(0, -1).join('');
+      const next = terminalLineChars().slice(0, -1).join('');
+      setTerminalCurrentLine(next, terminalLineLength(next), { sync: false });
       resetTerminalLineNavigation();
     } else if (char === '\x15') {
-      terminalCurrentLine = '';
+      resetTerminalCurrentLine({ sync: false });
       resetTerminalLineNavigation();
     } else if (char >= ' ') {
-      terminalCurrentLine += char;
+      const next = `${terminalCurrentLine}${char}`;
+      setTerminalCurrentLine(next, terminalLineLength(next), { sync: false });
       resetTerminalLineNavigation();
     }
   }
@@ -423,9 +1109,8 @@ function noteTerminalData(data) {
 
 function replaceTerminalInputLine(value) {
   const next = String(value || '');
-  const erase = '\x7f'.repeat(Array.from(terminalCurrentLine).length);
-  if (!writeTerminalKeystrokes(`${erase}${next}`)) return false;
-  terminalCurrentLine = next;
+  clearTerminalInputLine();
+  if (next) insertTerminalInputAtCursor(next, { resetNavigation: false });
   return true;
 }
 
@@ -590,7 +1275,8 @@ async function ensureVendorVerified() {
     return;
   }
   const manifest = await loadManifest(VENDOR_MANIFEST);
-  const assets = EXPECTED_VENDOR_ASSETS;
+  requireManifestAssets(manifest, EXPECTED_VENDOR_ASSETS, VENDOR_MANIFEST);
+  const assets = Object.keys(manifest.assets || {});
   await verifyManifestAssets(manifest, assets);
   vendorVerified = true;
   log(`Verified ${assets.length} browser vendor asset(s) against ${VENDOR_MANIFEST}.`);
@@ -667,6 +1353,7 @@ function ensureTerminal() {
   terminal = new Terminal({
     cursorBlink: true,
     convertEol: true,
+    disableStdin: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
     fontSize: 14,
     scrollback: 7000,
@@ -681,6 +1368,10 @@ function ensureTerminal() {
   terminalDataDisposable = terminal.onData?.(noteTerminalData) || null;
   terminal.attachCustomKeyEventHandler?.(event => {
     if (event.type !== 'keydown') return true;
+    if (handleTerminalEditingKey(event)) {
+      event.preventDefault();
+      return false;
+    }
     if (event.altKey || event.ctrlKey || event.metaKey) return true;
     if (event.key === 'ArrowUp') {
       if (!navigateTerminalHistory(-1)) return true;
@@ -695,6 +1386,10 @@ function ensureTerminal() {
     return true;
   });
   terminal.open(el.terminalBox);
+  terminalKeydownHandler = handleTerminalKeydownCapture;
+  terminalPasteHandler = handleTerminalPasteCapture;
+  el.terminalBox.addEventListener('keydown', terminalKeydownHandler, true);
+  el.terminalBox.addEventListener('paste', terminalPasteHandler, true);
   fitAddon?.fit?.();
   terminalResizeHandler = () => fitAddon?.fit?.();
   window.addEventListener('resize', terminalResizeHandler);
@@ -704,11 +1399,15 @@ function ensureTerminal() {
 function resetTerminal() {
   try { terminalDataDisposable?.dispose?.(); } catch (_) { /* noop */ }
   if (terminalResizeHandler) window.removeEventListener('resize', terminalResizeHandler);
+  if (terminalKeydownHandler) el.terminalBox.removeEventListener('keydown', terminalKeydownHandler, true);
+  if (terminalPasteHandler) el.terminalBox.removeEventListener('paste', terminalPasteHandler, true);
   try { terminal?.dispose?.(); } catch (_) { /* noop */ }
   terminal = null;
   fitAddon = null;
   terminalDataDisposable = null;
   terminalResizeHandler = null;
+  terminalKeydownHandler = null;
+  terminalPasteHandler = null;
   el.terminalBox.textContent = '';
 }
 
@@ -765,6 +1464,18 @@ function terminalBufferText() {
   return lines.join('\n');
 }
 
+function terminalAtPrompt() {
+  const lines = terminalBufferText().split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    if (line === '>') return true;
+    if (/(?:^|\s)(?:\.\s*)+>$/.test(line)) return true;
+    return false;
+  }
+  return false;
+}
+
 function terminalDebugState() {
   return {
     hasTerminalPaste: typeof terminal?.paste === 'function',
@@ -786,8 +1497,17 @@ function terminalDebugState() {
 async function waitForTerminalInputReady(timeoutMs = 8000) {
   const startedAt = performance.now();
   while (performance.now() - startedAt < timeoutMs) {
-    if (ptyServer?.state === 'input' && `${terminalRowsText()}\n${terminalBufferText()}`.includes('>')) return true;
+    if (ptyServer?.state === 'input' && terminalAtPrompt()) return true;
     await delay(100);
+  }
+  return false;
+}
+
+async function waitForTerminalCommandComplete(previousBuffer, timeoutMs = 8000) {
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < timeoutMs) {
+    await delay(40);
+    if (terminalBufferText() !== previousBuffer && terminalAtPrompt()) return true;
   }
   return false;
 }
@@ -797,31 +1517,41 @@ function writePtyServerInput(text) {
   const bytes = Array.from(new TextEncoder().encode(String(text || '').replace(/\r?\n/g, '\n')));
   ptyServer.toWorkerBuf.push(...bytes);
   if (ptyServer.state === 'input') ptyServer.feedToWorker(bytes.length);
+  scrollTerminalToBottomSoon();
   return true;
+}
+
+function echoProgrammaticTerminalInput(text) {
+  const value = String(text || '');
+  if (!value) return;
+  clearTerminalInputLine();
+  terminal?.write?.(value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\r\n'));
+  scrollTerminalToBottomSoon();
 }
 
 function selectTerminalInputBridge() {
   terminalInputWriter = null;
   terminalInputMethod = '';
 
-  if (typeof terminal?.paste === 'function') {
-    terminalInputMethod = 'xterm paste API';
-    terminalInputWriter = text => {
-      terminal.focus?.();
-      terminal.paste(String(text || ''));
-    };
-    return;
-  }
-
   if (typeof ptyMaster?.ldisc?.writeFromLower === 'function') {
     terminalInputMethod = 'PTY line discipline';
-    terminalInputWriter = text => ptyMaster.ldisc.writeFromLower(String(text || '').replace(/\r?\n/g, '\r'));
+    terminalInputWriter = text => {
+      const value = String(text || '');
+      clearTerminalInputLine();
+      ptyMaster.ldisc.writeFromLower(value.replace(/\r?\n/g, '\r'));
+      scrollTerminalToBottomSoon();
+      return true;
+    };
     return;
   }
 
   if (ptyServer) {
     terminalInputMethod = 'PTY server feed';
-    terminalInputWriter = writePtyServerInput;
+    terminalInputWriter = text => {
+      const value = String(text || '');
+      echoProgrammaticTerminalInput(value);
+      return writePtyServerInput(value);
+    };
   }
 }
 
@@ -1123,7 +1853,7 @@ async function startSession() {
     setStartupStage(2);
     const term = ensureTerminal();
     term.clear();
-    terminalCurrentLine = '';
+    resetTerminalCurrentLine();
     resetTerminalLineNavigation();
     setStartupStage(3);
     const pty = await loadPtyModule();
@@ -1131,7 +1861,6 @@ async function startSession() {
     ptyMaster = pair.master;
     ptySlave = pair.slave;
     term.loadAddon(ptyMaster);
-    selectTerminalInputBridge();
 
     setStartupStage(4);
     worker = new Worker('workers/singular-terminal-worker.js', { name: 'singular-terminal-worker' });
@@ -1149,6 +1878,7 @@ async function startSession() {
     setStartupStage(6);
     ptyServer = new pty.TtyServer(ptySlave);
     ptyServer.start(worker);
+    selectTerminalInputBridge();
     startSessionFileTracking();
     setStatus('ready', 'Session running', 'interactive terminal');
     setStartButtonState('running', 'Running');
@@ -1176,7 +1906,7 @@ function terminateSession({ silent = false } = {}) {
   ptySlave = null;
   terminalInputWriter = null;
   terminalInputMethod = '';
-  terminalCurrentLine = '';
+  resetTerminalCurrentLine();
   resetTerminalLineNavigation();
   stopSessionFileTracking();
   rejectPendingWorkerRequests();
@@ -1192,7 +1922,27 @@ async function restartSession() {
   await startSession();
 }
 
-async function sendEditorToTerminal() {
+function selectedTutorial() {
+  const tutorials = currentTutorialList();
+  const index = Math.max(0, Math.min(tutorials.length - 1, Number(el.tutorialSelect.value || 0)));
+  return tutorials[index] || null;
+}
+
+function appendTutorialToEditor() {
+  const tutorial = selectedTutorial();
+  const code = tutorialCodeText(tutorial).trimEnd();
+  if (!tutorial || !code) {
+    log('No tutorial code to append.');
+    return;
+  }
+  const current = el.editor.value.replace(/\s+$/, '');
+  const next = current ? `${current}\n\n${code}\n` : `${code}\n`;
+  setWorkbenchTab('editor');
+  setEditorValue(next, { focus: true });
+  log(`Appended tutorial "${tutorial.title}" to the editor.`);
+}
+
+async function sendTerminalChunks(chunks, description) {
   if (!worker || !ptySlave) {
     log('No terminal session. Start Singular first.');
     return;
@@ -1205,13 +1955,64 @@ async function sendEditorToTerminal() {
     log('Terminal is not ready for input yet; wait for the Singular prompt and try again.');
     return;
   }
-  const code = el.editor.value.endsWith('\n') ? el.editor.value : `${el.editor.value}\n`;
-  if (writeTerminalInput(code)) {
-    rememberTerminalCommands(code);
-    terminalCurrentLine = '';
-    resetTerminalLineNavigation();
-    log(`Sent editor contents to the terminal via ${terminalInputMethod}.`);
+  const codeChunks = chunks
+    .map(chunk => String(chunk || '').replace(/\s+$/, ''))
+    .filter(chunk => chunk.trim());
+  if (!codeChunks.length) {
+    log(`No ${description} to send.`);
+    return;
   }
+  let sent = 0;
+  let sentLines = 0;
+  for (const chunk of codeChunks) {
+    if (!await waitForTerminalInputReady()) {
+      log(`Stopped sending ${description}; terminal did not return to a prompt.`);
+      break;
+    }
+    const before = terminalBufferText();
+    if (!writeTerminalInput(`${chunk}\n`)) break;
+    rememberTerminalCommands(chunk);
+    sent += 1;
+    sentLines += chunk.split(/\r?\n/).filter(line => line.trim()).length;
+    resetTerminalCurrentLine();
+    resetTerminalLineNavigation();
+    await waitForTerminalCommandComplete(before);
+  }
+  if (sent) {
+    const detail = sent === sentLines ? `${sent} ${sent === 1 ? 'line' : 'lines'}` : `${sentLines} lines in ${sent} steps`;
+    log(`Sent ${detail} of ${description} to the terminal via ${terminalInputMethod}.`);
+  }
+}
+
+async function sendCodeToTerminal(code, description) {
+  const lines = String(code || '')
+    .split(/\r?\n/)
+    .map(line => line.trimEnd())
+    .filter(line => line.trim());
+  await sendTerminalChunks(lines, description);
+}
+
+async function sendEditorToTerminal() {
+  await sendCodeToTerminal(el.editor.value, 'editor contents');
+}
+
+async function sendTutorialCode(index) {
+  const step = currentTutorialSteps[index];
+  if (!step?.code) {
+    log('Tutorial code step is empty.');
+    return;
+  }
+  await sendTerminalChunks([tutorialStepTerminalCode(step)], `tutorial lines ${step.lineLabel}`);
+}
+
+async function pasteTutorialAll() {
+  const tutorial = selectedTutorial();
+  if (!tutorial) {
+    log('No tutorial selected.');
+    return;
+  }
+  const steps = tutorialStatementSteps(tutorial).map(tutorialStepTerminalCode);
+  await sendTerminalChunks(steps, `tutorial "${tutorial.title}"`);
 }
 
 function writeTerminalInput(text, { quiet = false } = {}) {
@@ -1243,7 +2044,7 @@ async function loadSelectedLib() {
   const command = `LIB "${path}";\n`;
   if (writeTerminalInput(command)) {
     rememberTerminalCommands(command);
-    terminalCurrentLine = '';
+    resetTerminalCurrentLine();
     resetTerminalLineNavigation();
     log(`Sent LIB command for ${path} via ${terminalInputMethod}.`);
   }
@@ -1529,6 +2330,17 @@ function wireEvents() {
   el.jsonInput.addEventListener('change', () => importWorkspace(el.jsonInput.files?.[0]));
   el.editor.addEventListener('input', refreshEditorHighlight);
   el.editor.addEventListener('scroll', refreshEditorHighlight);
+  el.tabEditor.addEventListener('click', () => setWorkbenchTab('editor'));
+  el.tabTutorials.addEventListener('click', () => setWorkbenchTab('tutorials'));
+  el.tutorialCategory.addEventListener('change', () => {
+    renderTutorialOptions();
+    renderTutorial();
+  });
+  el.tutorialSelect.addEventListener('change', renderTutorial);
+  el.tutorialAppendEditor.addEventListener('click', () => runAction('Append tutorial to editor', appendTutorialToEditor));
+  el.tutorialPasteAll.addEventListener('click', () => runAction('Paste tutorial all', pasteTutorialAll));
+  el.tutorialMultiline.addEventListener('change', renderTutorial);
+  window.addEventListener('resize', () => requestAnimationFrame(updateTutorialLineOverflow));
 
   document.addEventListener('keydown', event => {
     for (const action of actions) {
@@ -1543,6 +2355,9 @@ function wireEvents() {
 
 async function main() {
   wireEvents();
+  renderTutorialCategories();
+  renderTutorialOptions();
+  renderTutorial();
   refreshEditorHighlight();
   await ensureExampleFile();
   await refreshFileList();
@@ -1553,6 +2368,12 @@ async function main() {
     runBatch,
     benchmark,
     sendEditorToTerminal,
+    sendTutorialCode,
+    appendTutorialToEditor,
+    pasteTutorialAll,
+    tutorialSteps: () => currentTutorialSteps,
+    tutorials: TUTORIALS,
+    tutorialCategories: TUTORIAL_CATEGORY_LIST,
     shortcuts: SHORTCUTS,
     listFiles,
     listVisibleFiles: listMergedFiles,

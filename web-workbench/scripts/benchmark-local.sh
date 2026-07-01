@@ -6,7 +6,7 @@ PORT="${PORT:-8080}"
 cd "${ROOT_DIR}"
 
 missing=0
-for f in public/engine/Singular.js public/vendor/xterm/xterm.js public/vendor/xterm/xterm.css public/vendor/xterm-pty/index.mjs public/vendor/xterm-pty/workerTools.js; do
+for f in public/engine/Singular.js public/vendor/xterm/xterm.js public/vendor/xterm/xterm.css public/vendor/xterm-pty/index.mjs public/vendor/xterm-pty/workerTools.js public/vendor/katex/katex.min.css public/vendor/katex/katex.min.js; do
   if [[ ! -f "$f" ]]; then
     echo "Missing: $f" >&2
     missing=1
