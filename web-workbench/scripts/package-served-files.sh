@@ -14,6 +14,7 @@ TRUST_RELEASE_SIGNATURE_URL="${TRUST_RELEASE_SIGNATURE_URL:-}"
 TRUST_PUBLIC_KEY_FILE="${TRUST_PUBLIC_KEY_FILE:-}"
 
 RUNTIME_ASSETS=(
+  _headers
   index.html
   trust-config.js
   manifest.webmanifest
@@ -37,6 +38,15 @@ RUNTIME_ASSETS=(
   engine/Singular.data
 )
 
+if [[ -d "${PUBLIC_DIR}/tutorials" ]]; then
+  while IFS= read -r tutorial_path; do
+    RUNTIME_ASSETS+=("${tutorial_path#${PUBLIC_DIR}/}")
+  done < <(
+    find "${PUBLIC_DIR}/tutorials" -type f ! -name '.DS_Store' \
+      | LC_ALL=C sort
+  )
+fi
+
 if [[ -d "${PUBLIC_DIR}/vendor/katex/fonts" ]]; then
   while IFS= read -r font_path; do
     RUNTIME_ASSETS+=("${font_path#${PUBLIC_DIR}/}")
@@ -51,6 +61,7 @@ mkdir -p "${OUT_DIR}"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
 cp -R "${PUBLIC_DIR}/." "${STAGE_DIR}/"
+cp "${WORKBENCH_DIR}/deploy/netlify-headers" "${STAGE_DIR}/_headers"
 
 for asset in "${RUNTIME_ASSETS[@]}"; do
   if [[ ! -f "${STAGE_DIR}/${asset}" ]]; then
