@@ -39,10 +39,11 @@ Implemented in `.github/workflows/build.yml`:
 3. overlays this repo into `Singular/emscripten`
 4. builds the WebAssembly engine
 5. packages the static web app
-6. uploads the package as a workflow artifact.
+6. uploads a full release bundle and a deploy artifact.
 
 For GitHub Releases, the workflow signs the release manifest and attaches the
-zip plus manifest files to the GitHub Release. The repository secrets have to be configured before publishing signed releases:
+deploy zips plus manifest files to the GitHub Release. The repository secrets
+have to be configured before publishing signed releases:
 
 ```text
 SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM
@@ -76,10 +77,15 @@ The Singular webserver should serve immutable release directories, for example:
 https://www.singular.uni-kl.de/wasm/releases/2026-06-04/
 ```
 
-Manual deployment is:
+Manual deployment from the deploy artifact is:
 
-1. download the release zip from the GitHub Release
-2. unpack it into a new release directory on the Singular webserver
+1. download `deploy-<release>.zip`, or the `deploy-<release>` workflow artifact
+2. upload or unpack the zip on the static hosting provider.
+
+Manual deployment to a normal static webserver is:
+
+1. download `singular-workbench-<release>.zip`
+2. unpack it into a new immutable release directory on the Singular webserver
 3. make sure the webserver sends the headers from
    `web-workbench/deploy/nginx.conf`
 4. keep old release directories immutable

@@ -113,10 +113,16 @@ This writes:
 
 ```text
 web-workbench/dist/2026-06-04/singular-workbench-2026-06-04.zip
+web-workbench/dist/2026-06-04/deploy-2026-06-04.zip
 web-workbench/dist/2026-06-04/release-manifest.json
 web-workbench/dist/2026-06-04/release-manifest.json.sig
 web-workbench/dist/2026-06-04/release-manifest.json.sig.base64
 ```
+
+The `deploy-<release>.zip` file is the direct upload package for static
+hosting providers that accept a single zip. It contains `_headers` at the root
+for hosts that consume that file. `_headers` is deploy configuration and is not
+listed in the signed release manifest.
 
 ## Configure the browser trust anchor
 

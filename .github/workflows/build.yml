@@ -162,10 +162,18 @@ jobs:
           name: singular-in-browser-${{ env.RELEASE_ID }}
           path: |
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/singular-workbench-${{ env.RELEASE_ID }}.zip
+            Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/deploy-${{ env.RELEASE_ID }}.zip
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig.base64
           if-no-files-found: ignore
+
+      - name: Upload deploy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-${{ env.RELEASE_ID }}
+          path: Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/public/**
+          if-no-files-found: error
 
   attach-release:
     if: github.event_name == 'release'

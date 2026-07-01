@@ -14,7 +14,6 @@ TRUST_RELEASE_SIGNATURE_URL="${TRUST_RELEASE_SIGNATURE_URL:-}"
 TRUST_PUBLIC_KEY_FILE="${TRUST_PUBLIC_KEY_FILE:-}"
 
 RUNTIME_ASSETS=(
-  _headers
   index.html
   trust-config.js
   manifest.webmanifest
@@ -36,6 +35,10 @@ RUNTIME_ASSETS=(
   engine/Singular.js
   engine/Singular.wasm
   engine/Singular.data
+)
+
+DEPLOYMENT_ASSETS=(
+  _headers
 )
 
 if [[ -d "${PUBLIC_DIR}/tutorials" ]]; then
@@ -63,9 +66,9 @@ mkdir -p "${STAGE_DIR}"
 cp -R "${PUBLIC_DIR}/." "${STAGE_DIR}/"
 cp "${WORKBENCH_DIR}/deploy/netlify-headers" "${STAGE_DIR}/_headers"
 
-for asset in "${RUNTIME_ASSETS[@]}"; do
+for asset in "${DEPLOYMENT_ASSETS[@]}" "${RUNTIME_ASSETS[@]}"; do
   if [[ ! -f "${STAGE_DIR}/${asset}" ]]; then
-    echo "Missing runtime asset: ${STAGE_DIR}/${asset}" >&2
+    echo "Missing packaged asset: ${STAGE_DIR}/${asset}" >&2
     exit 1
   fi
 done
@@ -135,15 +138,20 @@ if [[ -n "${SIGNING_KEY}" ]]; then
 fi
 
 ZIP_PATH="${OUT_DIR}/singular-workbench-${RELEASE_ID}.zip"
+DEPLOY_ZIP_PATH="${OUT_DIR}/deploy-${RELEASE_ID}.zip"
 rm -f "${ZIP_PATH}"
 (
   cd "${STAGE_DIR}"
-  zip -9 "${ZIP_PATH}" "${RUNTIME_ASSETS[@]}"
+  zip -9 "${ZIP_PATH}" "${DEPLOYMENT_ASSETS[@]}" "${RUNTIME_ASSETS[@]}"
 )
+cp "${ZIP_PATH}" "${DEPLOY_ZIP_PATH}"
 
 cat <<MSG
 Release package written to:
   ${ZIP_PATH}
+
+Deploy package written to:
+  ${DEPLOY_ZIP_PATH}
 
 Release manifest:
   ${OUT_DIR}/release-manifest.json
