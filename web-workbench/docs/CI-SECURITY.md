@@ -1,10 +1,17 @@
-# CI security note for the WebAssembly workbench patch
+# CI security notes for the WebAssembly workbench
 
-This patch intentionally does not add an active `.github/workflows/*` file.
-Building the WebAssembly target executes code from the pull request and runs
-third-party bootstrap/configure scripts downloaded by `emscripten/build.sh`. That
-is normal for this build, but it should be treated as untrusted
-code execution in CI.
+The active workflow in `.github/workflows/build.yml` builds the WebAssembly
+target on pull requests, on a daily schedule, and on manual requests. Building
+executes checked-out Singular and browser code plus third-party
+bootstrap/configure scripts. That is normal for this build, but pull-request
+output must be treated as untrusted.
+
+Pull-request and scheduled jobs have read-only repository permissions, do not
+receive signing keys, and can only upload workflow artifacts. Scheduled runs
+always use the unsigned path. The manual `create_release` path is accepted only
+when the workflow itself runs from the default `main` branch, the maintainer
+confirms that branch is trusted, the Singular ref is the trusted `spielwiese`
+branch, and the release tag matches the restricted date-based format.
 
 Recommended policy:
 
@@ -28,5 +35,16 @@ Recommended policy:
 - For public deployments, publish a signed release manifest on a protected
   GitHub branch or release path and configure the browser trust anchor described
   in `docs/DEPLOYMENT.md`.
+- Never replace a manifest already published under a release id. The workflow
+  treats `gh-pages/singular-wasm/<release-id>/` as immutable.
+- Keep the actual release in draft state until all assets are uploaded and the
+  signed manifest is safely published. A failed release run should leave a
+  recoverable draft rather than a public partial release.
+- Verify every generated signature with the configured public key before
+  uploading it. This catches mismatched or incompletely rotated key secrets.
+- Serialize writes to the manifest branch and rebase immediately before push so
+  concurrent releases cannot silently lose one another's manifest commits.
 
-A manual-only example workflow is provided in `ci/build-workbench.yml.example`.
+The example in `ci/build-workbench.yml.example` remains useful for independent
+deployments, but the repository workflow is the authoritative CI and release
+path.
