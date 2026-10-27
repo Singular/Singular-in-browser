@@ -106,24 +106,32 @@ secrets beyond the two signing keys described above:
 5. Enable `create_release` and `trusted_branch_confirmed`.
 6. Leave `signed_release_test` and `publish_test_manifest` disabled.
 
-The workflow validates the request before building. It signs the package,
-creates a draft release at the selected `main` commit, uploads all release
-assets, and publishes the signed manifest to the immutable
+The workflow validates the request before building. The build job has no
+signing secrets; it passes only the built public files to a fresh job that uses
+the exact trusted browser commit's packaging code. That job signs and verifies
+the package and removes the private-key file before any artifact upload. The
+workflow then creates a draft release at the selected `main` commit, uploads all
+release assets, and publishes the signed manifest to the immutable
 `gh-pages/singular-wasm/<release-id>/` path. It publishes the draft only after
 the manifest push succeeds. A failure after draft creation deliberately leaves
 the draft for a maintainer to inspect. Workflow reruns never replace a release
-tag, a draft's assets, or a published manifest. To rebuild from scratch, delete
-the failed draft and its tag first; otherwise, verify and complete the draft
-manually.
+tag, a draft's assets, or a published manifest. If the signed manifest was
+already published, verify and publish the existing draft manually or abandon it
+and choose a new release id; rebuilding different bytes under that id is
+forbidden. If no manifest was published, delete the failed draft and tag before
+requesting a clean rebuild.
 
 The `spielwiese` branch is resolved when the build starts. The release manifest
 records the resolved Singular commit SHA, so the exact engine source remains
 auditable even if that branch advances later.
 
 Publishing a valid date-based GitHub Release through the normal GitHub Releases
-UI is still supported and triggers the existing attach-and-publish flow.
-Scheduled builds run daily, remain unsigned, and only produce workflow
-artifacts; they never create a release or modify `gh-pages`.
+UI is still supported and triggers the existing attach-and-publish flow. That
+legacy event occurs only after the release is public, so assets are attached
+later and the path is incompatible with immutable GitHub Releases. Use the
+draft-first Actions path when immutable releases are enabled. Scheduled builds
+run daily, remain unsigned, and only produce workflow artifacts; they never
+create a release or modify `gh-pages`.
 
 Neither release path deploys files to the Singular webserver. Continue with the
 deployment and verification steps below after the GitHub Release is complete.

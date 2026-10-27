@@ -11,7 +11,16 @@ receive signing keys, and can only upload workflow artifacts. Scheduled runs
 always use the unsigned path. The manual `create_release` path is accepted only
 when the workflow itself runs from the default `main` branch, the maintainer
 confirms that branch is trusted, the Singular ref is the trusted `spielwiese`
-branch, and the release tag matches the restricted date-based format.
+branch, and the release tag matches the restricted date-based format. Signed
+tests have the same branch and Singular-ref restrictions and require a `test-*`
+release id.
+
+The build job never receives the signing secrets. For signed runs it uploads
+only the built public files. A fresh signing job checks out the exact trusted
+browser commit, uses its packaging scripts, treats the build output as data,
+records the resolved Singular commit, signs and verifies the manifest, removes
+the private-key file, and only then uploads the release artifacts. Third-party
+Actions used by this workflow are pinned to full commit SHAs.
 
 Recommended policy:
 
@@ -19,6 +28,8 @@ Recommended policy:
   `pull_request_target`, when building or testing PR code.
 - Set `permissions: { contents: read }` or the narrowest equivalent.
 - Do not expose repository, deployment, package, or cloud secrets to the build.
+- Keep signing in a fresh job which executes only trusted packaging code; never
+  sign in the job that built or tested project and dependency code.
 - Do not run this build on persistent self-hosted runners unless the runner is
   disposable and isolated.
 - Disable credential persistence in `actions/checkout` when the job does not
@@ -42,6 +53,8 @@ Recommended policy:
   recoverable draft rather than a public partial release.
 - Verify every generated signature with the configured public key before
   uploading it. This catches mismatched or incompletely rotated key secrets.
+- Delete the private-key file before running artifact upload or publication
+  steps.
 - Serialize writes to the manifest branch and rebase immediately before push so
   concurrent releases cannot silently lose one another's manifest commits.
 

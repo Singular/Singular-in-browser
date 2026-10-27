@@ -12,6 +12,7 @@ SIGNING_KEY="${SIGNING_KEY:-}"
 TRUST_RELEASE_MANIFEST_URL="${TRUST_RELEASE_MANIFEST_URL:-}"
 TRUST_RELEASE_SIGNATURE_URL="${TRUST_RELEASE_SIGNATURE_URL:-}"
 TRUST_PUBLIC_KEY_FILE="${TRUST_PUBLIC_KEY_FILE:-}"
+SINGULAR_COMMIT="${SINGULAR_COMMIT:-}"
 
 RUNTIME_ASSETS=(
   index.html
@@ -63,15 +64,16 @@ fi
 mkdir -p "${OUT_DIR}"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
-cp -R "${PUBLIC_DIR}/." "${STAGE_DIR}/"
-cp "${WORKBENCH_DIR}/deploy/netlify-headers" "${STAGE_DIR}/_headers"
 
-for asset in "${DEPLOYMENT_ASSETS[@]}" "${RUNTIME_ASSETS[@]}"; do
-  if [[ ! -f "${STAGE_DIR}/${asset}" ]]; then
-    echo "Missing packaged asset: ${STAGE_DIR}/${asset}" >&2
+for asset in "${RUNTIME_ASSETS[@]}"; do
+  if [[ ! -f "${PUBLIC_DIR}/${asset}" ]]; then
+    echo "Missing packaged asset: ${PUBLIC_DIR}/${asset}" >&2
     exit 1
   fi
+  mkdir -p "$(dirname "${STAGE_DIR}/${asset}")"
+  cp "${PUBLIC_DIR}/${asset}" "${STAGE_DIR}/${asset}"
 done
+cp "${WORKBENCH_DIR}/deploy/netlify-headers" "${STAGE_DIR}/_headers"
 
 if [[ -n "${TRUST_RELEASE_MANIFEST_URL}" || -n "${TRUST_RELEASE_SIGNATURE_URL}" || -n "${TRUST_PUBLIC_KEY_FILE}" ]]; then
   if [[ -z "${TRUST_RELEASE_MANIFEST_URL}" || -z "${TRUST_RELEASE_SIGNATURE_URL}" || -z "${TRUST_PUBLIC_KEY_FILE}" ]]; then
@@ -113,7 +115,13 @@ fi
 if [[ -n "${GITHUB_MANIFEST_URL}" ]]; then
   METADATA+=(--metadata "githubManifestUrl=${GITHUB_MANIFEST_URL}")
 fi
-if git -C "${WORKBENCH_DIR}/../.." rev-parse HEAD >/dev/null 2>&1; then
+if [[ -n "${SINGULAR_COMMIT}" ]]; then
+  if [[ ! "${SINGULAR_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "SINGULAR_COMMIT must be a full lowercase Git commit SHA." >&2
+    exit 1
+  fi
+  METADATA+=(--metadata "gitCommit=${SINGULAR_COMMIT}")
+elif git -C "${WORKBENCH_DIR}/../.." rev-parse HEAD >/dev/null 2>&1; then
   METADATA+=(--metadata "gitCommit=$(git -C "${WORKBENCH_DIR}/../.." rev-parse HEAD)")
 fi
 
