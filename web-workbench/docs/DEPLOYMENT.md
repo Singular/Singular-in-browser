@@ -93,6 +93,49 @@ git push origin gh-pages
 cd -
 ```
 
+## Create a release with GitHub Actions
+
+The repository workflow can create an actual signed GitHub Release without any
+secrets beyond the two signing keys described above:
+
+1. Open **Actions → Build Singular in Browser → Run workflow**.
+2. Select the default `main` branch.
+3. Leave `singular_ref` set to the trusted `spielwiese` branch.
+4. Set `release_id` to a new tag such as `Singular-2026-10-26` or
+   `Singular-2026-10-26-2`.
+5. Enable `create_release` and `trusted_branch_confirmed`.
+6. Leave `signed_release_test` and `publish_test_manifest` disabled.
+
+The workflow validates the request before building. The build job has no
+signing secrets; it passes only the built public files to a fresh job that uses
+the exact trusted browser commit's packaging code. That job signs and verifies
+the package and removes the private-key file before any artifact upload. The
+workflow then creates a draft release at the selected `main` commit, uploads all
+release assets, and publishes the signed manifest to the immutable
+`gh-pages/singular-wasm/<release-id>/` path. It publishes the draft only after
+the manifest push succeeds. A failure after draft creation deliberately leaves
+the draft for a maintainer to inspect. Workflow reruns never replace a release
+tag, a draft's assets, or a published manifest. If the signed manifest was
+already published, verify and publish the existing draft manually or abandon it
+and choose a new release id; rebuilding different bytes under that id is
+forbidden. If no manifest was published, delete the failed draft and tag before
+requesting a clean rebuild.
+
+The `spielwiese` branch is resolved when the build starts. The release manifest
+records the resolved Singular commit SHA, so the exact engine source remains
+auditable even if that branch advances later.
+
+Publishing a valid date-based GitHub Release through the normal GitHub Releases
+UI is still supported and triggers the existing attach-and-publish flow. That
+legacy event occurs only after the release is public, so assets are attached
+later and the path is incompatible with immutable GitHub Releases. Use the
+draft-first Actions path when immutable releases are enabled. Scheduled builds
+run daily, remain unsigned, and only produce workflow artifacts; they never
+create a release or modify `gh-pages`.
+
+Neither release path deploys files to the Singular webserver. Continue with the
+deployment and verification steps below after the GitHub Release is complete.
+
 ## Per-release build and package
 
 From a checkout with the workbench and generated engine/vendor files:
@@ -225,6 +268,9 @@ If you automate publishing with GitHub Actions:
 - use `permissions: contents: write` only for the release/publish job
 - keep untrusted pull-request builds on read-only permissions
 - avoid `pull_request_target` for building contributor code.
+- validate release tags before using them in artifact names or repository paths
+- create releases as drafts and publish them only after their manifests are
+  committed successfully.
 
 GitHub Actions workflows must live in `.github/workflows/`, and the
 `permissions` key controls the `GITHUB_TOKEN` access. `contents: write` is the

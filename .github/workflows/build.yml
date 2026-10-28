@@ -2,6 +2,8 @@ name: Build Singular in Browser
 
 on:
   pull_request:
+  schedule:
+    - cron: '17 9 * * *'
   workflow_dispatch:
     inputs:
       singular_ref:
@@ -9,16 +11,21 @@ on:
         required: true
         default: spielwiese
       release_id:
-        description: Release id used for packaging. Use test-* for signed release tests.
+        description: Release id used for packaging. Actual releases must use Singular-YYYY-MM-DD or Singular-YYYY-MM-DD-N.
         required: false
         default: test-manual
+      create_release:
+        description: "Create and publish an actual signed GitHub Release (main branch only)."
+        required: true
+        type: boolean
+        default: false
       signed_release_test:
         description: "WARNING: signs artifacts with release secrets. Run only on trusted maintainer branches."
         required: true
         type: boolean
         default: false
       trusted_branch_confirmed:
-        description: "Required for signed_release_test: I confirm the selected branch is trusted and may access signing secrets."
+        description: "Required for signed_release_test/create_release: I confirm the selected branch is trusted and may access signing secrets."
         required: true
         type: boolean
         default: false
@@ -36,16 +43,105 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     container: emscripten/emsdk:3.1.23
+    outputs:
+      singular_commit: ${{ steps.singular-commit.outputs.sha }}
+      signing_input_artifact_id: ${{ steps.upload-signing-input.outputs.artifact-id }}
+    defaults:
+      run:
+        shell: bash
     env:
       SINGULAR_REF: ${{ inputs.singular_ref || 'spielwiese' }}
       RELEASE_ID: ${{ inputs.release_id || github.event.release.tag_name || github.sha }}
       SERVER_BASE_URL: https://www.singular.uni-kl.de/wasm/releases/${{ inputs.release_id || github.event.release.tag_name || github.sha }}/
       GITHUB_MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/gh-pages/singular-wasm/${{ inputs.release_id || github.event.release.tag_name || github.sha }}/release-manifest.json
-      IS_SIGNED_BUILD: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.signed_release_test) }}
+      IS_SIGNED_BUILD: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.signed_release_test || inputs.create_release)) }}
       IS_SIGNED_RELEASE_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.signed_release_test }}
+      IS_MANUAL_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
+      PUBLISH_TEST_MANIFEST: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_test_manifest }}
       TRUSTED_BRANCH_CONFIRMED: ${{ inputs.trusted_branch_confirmed }}
     steps:
+      - name: Validate workflow request
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          validate_release_tag() {
+            if [[ ${#RELEASE_ID} -gt 64 ]] ||
+               [[ ! "$RELEASE_ID" =~ ^Singular-([0-9]{4}-[0-9]{2}-[0-9]{2})(-[1-9][0-9]*)?$ ]]; then
+              echo "Release ids must use Singular-YYYY-MM-DD or Singular-YYYY-MM-DD-N: $RELEASE_ID" >&2
+              exit 1
+            fi
+            local release_date="${BASH_REMATCH[1]}"
+            if ! python3 -c \
+              'from datetime import datetime; import sys; datetime.strptime(sys.argv[1], "%Y-%m-%d")' \
+              "$release_date" 2>/dev/null; then
+              echo "Release id contains an invalid calendar date: $RELEASE_ID" >&2
+              exit 1
+            fi
+          }
+
+          validate_package_id() {
+            if [[ ${#RELEASE_ID} -gt 64 ]] ||
+               [[ ! "$RELEASE_ID" =~ ^[A-Za-z0-9]+([._-][A-Za-z0-9]+)*$ ]]; then
+              echo "Release ids must contain only safe path characters: $RELEASE_ID" >&2
+              exit 1
+            fi
+          }
+
+          validate_test_release_id() {
+            validate_package_id
+            if [[ "$RELEASE_ID" != test-* ]]; then
+              echo "Signed test release ids must start with test-: $RELEASE_ID" >&2
+              exit 1
+            fi
+          }
+
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            validate_release_tag
+          fi
+
+          if [[ "$IS_MANUAL_RELEASE" == "true" ]]; then
+            if [[ "$DEFAULT_BRANCH" != "main" || "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "Actual releases may only be dispatched from the default main branch." >&2
+              exit 1
+            fi
+            if [[ "$TRUSTED_BRANCH_CONFIRMED" != "true" ]]; then
+              echo "create_release requires trusted_branch_confirmed=true." >&2
+              exit 1
+            fi
+            if [[ "$IS_SIGNED_RELEASE_TEST" == "true" || "$PUBLISH_TEST_MANIFEST" == "true" ]]; then
+              echo "create_release cannot be combined with signed_release_test or publish_test_manifest." >&2
+              exit 1
+            fi
+            if [[ "$SINGULAR_REF" != "spielwiese" ]]; then
+              echo "Actual releases must build the trusted Singular/Singular spielwiese branch." >&2
+              exit 1
+            fi
+            validate_release_tag
+          elif [[ "$IS_SIGNED_RELEASE_TEST" == "true" ]]; then
+            if [[ "$DEFAULT_BRANCH" != "main" || "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "Signed release tests may only be dispatched from the default main branch." >&2
+              exit 1
+            fi
+            if [[ "$TRUSTED_BRANCH_CONFIRMED" != "true" ]]; then
+              echo "signed_release_test requires trusted_branch_confirmed=true." >&2
+              exit 1
+            fi
+            if [[ "$SINGULAR_REF" != "spielwiese" ]]; then
+              echo "Signed release tests must build the trusted Singular/Singular spielwiese branch." >&2
+              exit 1
+            fi
+            validate_test_release_id
+          elif [[ "$PUBLISH_TEST_MANIFEST" == "true" ]]; then
+            echo "publish_test_manifest requires signed_release_test=true." >&2
+            exit 1
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            validate_package_id
+          fi
+
       - name: Install build dependencies
         run: |
           apt-get update
@@ -54,18 +150,37 @@ jobs:
             python3 nodejs npm make g++ gcc m4 bison flex patch file xz-utils rsync zip
 
       - name: Check out browser repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           path: browser
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify published release tag is on main
+        if: github.event_name == 'release'
+        run: |
+          git -C browser merge-base --is-ancestor HEAD origin/main || {
+            echo "Published release tags must point to a commit on main." >&2
+            exit 1
+          }
+
       - name: Check out Singular
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: Singular/Singular
           ref: ${{ env.SINGULAR_REF }}
           path: Singular
           persist-credentials: false
+
+      - name: Record resolved Singular commit
+        id: singular-commit
+        run: |
+          singular_commit="$(git -C Singular rev-parse HEAD)"
+          if [[ ! "$singular_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The resolved Singular ref is not a full commit SHA: $singular_commit" >&2
+            exit 1
+          fi
+          echo "sha=$singular_commit" >> "$GITHUB_OUTPUT"
 
       - name: Overlay browser sources into Singular checkout
         run: |
@@ -80,64 +195,17 @@ jobs:
       - name: Fetch browser dependencies
         run: bash Singular/emscripten/web-workbench/scripts/fetch-web-deps.sh
 
-      - name: Build Singular WebAssembly engine
+      - name: Build and test Singular WebAssembly engine
         env:
           JOBS: 8
         run: |
           cd Singular
-          bash emscripten/web-workbench/scripts/build-full-wasm.sh
+          bash emscripten/web-workbench/scripts/build-and-test-singular-wasm.sh
 
       - name: Static smoke checks
         run: |
           cd Singular/emscripten/web-workbench
           bash scripts/smoke-static.sh
-
-      - name: Validate signed release test request
-        if: env.IS_SIGNED_RELEASE_TEST == 'true'
-        run: |
-          if [ "${TRUSTED_BRANCH_CONFIRMED}" != "true" ]; then
-            echo "signed_release_test requires trusted_branch_confirmed=true." >&2
-            exit 1
-          fi
-          case "${RELEASE_ID}" in
-            test-*) ;;
-            *)
-              echo "Manual signed release tests must use a release_id beginning with test-." >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Prepare signing keys
-        if: env.IS_SIGNED_BUILD == 'true'
-        env:
-          PRIVATE_KEY: ${{ secrets.SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM }}
-          PUBLIC_KEY: ${{ secrets.SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM }}
-        run: |
-          if [ -z "${PRIVATE_KEY}" ]; then
-            echo "Missing SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM secret." >&2
-            exit 1
-          fi
-          if [ -z "${PUBLIC_KEY}" ]; then
-            echo "Missing SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM secret." >&2
-            exit 1
-          fi
-          case "${PRIVATE_KEY}" in
-            *"-----BEGIN PRIVATE KEY-----"*) ;;
-            *)
-              echo "SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM must be a PKCS#8 PEM private key." >&2
-              exit 1
-              ;;
-          esac
-          case "${PUBLIC_KEY}" in
-            *"-----BEGIN PUBLIC KEY-----"*) ;;
-            *)
-              echo "SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM must be an SPKI PEM public key." >&2
-              exit 1
-              ;;
-          esac
-          mkdir -p "$HOME/.singular-wasm-release"
-          printf '%s\n' "${PRIVATE_KEY}" > "$HOME/.singular-wasm-release/private.pem"
-          printf '%s\n' "${PUBLIC_KEY}" > "$HOME/.singular-wasm-release/public.pem"
 
       - name: Package unsigned build artifact
         if: env.IS_SIGNED_BUILD != 'true'
@@ -145,19 +213,20 @@ jobs:
           cd Singular/emscripten/web-workbench
           bash scripts/package-served-files.sh
 
-      - name: Package signed release artifact
+      - name: Upload signing input
+        id: upload-signing-input
         if: env.IS_SIGNED_BUILD == 'true'
-        env:
-          SIGNING_KEY: /github/home/.singular-wasm-release/private.pem
-          TRUST_RELEASE_MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/gh-pages/singular-wasm/${{ env.RELEASE_ID }}/release-manifest.json
-          TRUST_RELEASE_SIGNATURE_URL: https://raw.githubusercontent.com/${{ github.repository }}/gh-pages/singular-wasm/${{ env.RELEASE_ID }}/release-manifest.json.sig
-          TRUST_PUBLIC_KEY_FILE: /github/home/.singular-wasm-release/public.pem
-        run: |
-          cd Singular/emscripten/web-workbench
-          bash scripts/package-served-files.sh
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: singular-in-browser-signing-input-${{ env.RELEASE_ID }}
+          path: Singular/emscripten/web-workbench/public/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        if: env.IS_SIGNED_BUILD != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: singular-in-browser-${{ env.RELEASE_ID }}
           path: |
@@ -166,40 +235,295 @@ jobs:
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig
             Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig.base64
-          if-no-files-found: ignore
+          if-no-files-found: error
+          overwrite: true
 
       - name: Upload deploy artifact
-        uses: actions/upload-artifact@v4
+        if: env.IS_SIGNED_BUILD != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: deploy-${{ env.RELEASE_ID }}
           path: Singular/emscripten/web-workbench/dist/${{ env.RELEASE_ID }}/public/**
           if-no-files-found: error
+          overwrite: true
+
+  sign-release:
+    if: >-
+      ${{
+        github.event_name == 'release' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.signed_release_test || inputs.create_release)
+        )
+      }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      release_artifact_id: ${{ steps.upload-release-artifact.outputs.artifact-id }}
+    env:
+      RELEASE_ID: ${{ inputs.release_id || github.event.release.tag_name }}
+      SERVER_BASE_URL: https://www.singular.uni-kl.de/wasm/releases/${{ inputs.release_id || github.event.release.tag_name }}/
+      GITHUB_MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/gh-pages/singular-wasm/${{ inputs.release_id || github.event.release.tag_name }}/release-manifest.json
+      SINGULAR_COMMIT: ${{ needs.build.outputs.singular_commit }}
+    steps:
+      - name: Check out trusted packaging code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: browser
+          persist-credentials: false
+
+      - name: Validate signing inputs
+        run: |
+          if [[ ! "$SINGULAR_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The build did not provide a valid Singular commit SHA: $SINGULAR_COMMIT" >&2
+            exit 1
+          fi
+          rm -rf browser/web-workbench/public
+          mkdir -p browser/web-workbench/public
+
+      - name: Download built public files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.build.outputs.signing_input_artifact_id }}
+          path: browser/web-workbench/public
+
+      - name: Prepare signing keys
+        env:
+          PRIVATE_KEY: ${{ secrets.SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM }}
+          PUBLIC_KEY: ${{ secrets.SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM }}
+          PRIVATE_KEY_FILE: ${{ runner.temp }}/singular-wasm-release-private.pem
+          PUBLIC_KEY_FILE: ${{ runner.temp }}/singular-wasm-release-public.pem
+        run: |
+          if [[ -z "$PRIVATE_KEY" ]]; then
+            echo "Missing SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM secret." >&2
+            exit 1
+          fi
+          if [[ -z "$PUBLIC_KEY" ]]; then
+            echo "Missing SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM secret." >&2
+            exit 1
+          fi
+          case "$PRIVATE_KEY" in
+            *"-----BEGIN PRIVATE KEY-----"*) ;;
+            *)
+              echo "SINGULAR_WASM_RELEASE_PRIVATE_KEY_PEM must be a PKCS#8 PEM private key." >&2
+              exit 1
+              ;;
+          esac
+          case "$PUBLIC_KEY" in
+            *"-----BEGIN PUBLIC KEY-----"*) ;;
+            *)
+              echo "SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM must be an SPKI PEM public key." >&2
+              exit 1
+              ;;
+          esac
+          umask 077
+          printf '%s\n' "$PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
+          printf '%s\n' "$PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
+
+      - name: Package signed release artifact
+        env:
+          SIGNING_KEY: ${{ runner.temp }}/singular-wasm-release-private.pem
+          TRUST_RELEASE_MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/gh-pages/singular-wasm/${{ env.RELEASE_ID }}/release-manifest.json
+          TRUST_RELEASE_SIGNATURE_URL: https://raw.githubusercontent.com/${{ github.repository }}/gh-pages/singular-wasm/${{ env.RELEASE_ID }}/release-manifest.json.sig
+          TRUST_PUBLIC_KEY_FILE: ${{ runner.temp }}/singular-wasm-release-public.pem
+        run: |
+          cd browser/web-workbench
+          bash scripts/package-served-files.sh
+
+      - name: Remove private signing key
+        if: always()
+        env:
+          PRIVATE_KEY_FILE: ${{ runner.temp }}/singular-wasm-release-private.pem
+        run: rm -f "$PRIVATE_KEY_FILE"
+
+      - name: Verify signed release manifest
+        env:
+          MANIFEST_FILE: browser/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json
+          SIGNATURE_FILE: browser/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig
+          PUBLIC_KEY_FILE: ${{ runner.temp }}/singular-wasm-release-public.pem
+        run: |
+          node --input-type=module - <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { verify } from 'node:crypto';
+
+          const manifest = readFileSync(process.env.MANIFEST_FILE);
+          const signature = readFileSync(process.env.SIGNATURE_FILE);
+          const publicKey = readFileSync(process.env.PUBLIC_KEY_FILE);
+          const valid = verify(
+            'sha256',
+            manifest,
+            { key: publicKey, dsaEncoding: 'ieee-p1363' },
+            signature
+          );
+          if (!valid) throw new Error('The release manifest signature does not match the configured public key.');
+          console.log('Verified the release manifest signature.');
+          NODE
+
+      - name: Upload workflow artifact
+        id: upload-release-artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: singular-in-browser-${{ env.RELEASE_ID }}
+          path: |
+            browser/web-workbench/dist/${{ env.RELEASE_ID }}/singular-workbench-${{ env.RELEASE_ID }}.zip
+            browser/web-workbench/dist/${{ env.RELEASE_ID }}/deploy-${{ env.RELEASE_ID }}.zip
+            browser/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json
+            browser/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig
+            browser/web-workbench/dist/${{ env.RELEASE_ID }}/release-manifest.json.sig.base64
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload deploy artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deploy-${{ env.RELEASE_ID }}
+          path: browser/web-workbench/dist/${{ env.RELEASE_ID }}/public/**
+          if-no-files-found: error
+          overwrite: true
+
+  create-draft-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.create_release
+    needs: sign-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_ID: ${{ inputs.release_id }}
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - name: Download signed build artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.sign-release.outputs.release_artifact_id }}
+          path: release-assets
+
+      - name: Create draft release and upload assets
+        id: create
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          TARGET_COMMIT: ${{ github.sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag = process.env.RELEASE_ID;
+            const target = process.env.TARGET_COMMIT;
+            const dir = path.join(process.cwd(), 'release-assets');
+            const expected = [
+              `singular-workbench-${tag}.zip`,
+              `deploy-${tag}.zip`,
+              'release-manifest.json',
+              'release-manifest.json.sig',
+              'release-manifest.json.sig.base64'
+            ];
+
+            for (const name of expected) {
+              const filePath = path.join(dir, name);
+              if (!fs.statSync(filePath, { throwIfNoEntry: false })?.isFile()) {
+                core.setFailed(`Missing release asset: ${name}`);
+                return;
+              }
+            }
+
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            if (releases.some((release) => release.tag_name === tag)) {
+              core.setFailed(`A GitHub Release already exists for ${tag}.`);
+              return;
+            }
+
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`
+              });
+              core.setFailed(`Git tag ${tag} already exists.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              target_commitish: target,
+              name: tag,
+              draft: true,
+              prerelease: false,
+              generate_release_notes: true
+            });
+
+            for (const name of expected) {
+              const filePath = path.join(dir, name);
+              const data = fs.readFileSync(filePath);
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+                name,
+                data,
+                headers: {
+                  'content-type': 'application/octet-stream',
+                  'content-length': data.length
+                }
+              });
+            }
+
+            core.setOutput('release_id', String(release.id));
+            core.info(`Created draft release ${tag} with ${expected.length} assets.`);
 
   attach-release:
     if: github.event_name == 'release'
-    needs: build
+    needs: sign-release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
       RELEASE_ID: ${{ github.event.release.tag_name }}
     steps:
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: singular-in-browser-${{ env.RELEASE_ID }}
+          artifact-ids: ${{ needs.sign-release.outputs.release_artifact_id }}
           path: release-assets
 
       - name: Attach artifacts to GitHub Release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
             const release = context.payload.release;
             const dir = path.join(process.cwd(), 'release-assets');
-            for (const name of fs.readdirSync(dir)) {
-              if (!name.endsWith('.zip') && !name.endsWith('.json') && !name.endsWith('.sig') && !name.endsWith('.base64')) continue;
+            const expected = [
+              `singular-workbench-${process.env.RELEASE_ID}.zip`,
+              `deploy-${process.env.RELEASE_ID}.zip`,
+              'release-manifest.json',
+              'release-manifest.json.sig',
+              'release-manifest.json.sig.base64'
+            ];
+
+            for (const name of expected) {
+              const filePath = path.join(dir, name);
+              if (!fs.statSync(filePath, { throwIfNoEntry: false })?.isFile()) {
+                core.setFailed(`Missing release asset: ${name}`);
+                return;
+              }
+            }
+
+            for (const name of expected) {
               const filePath = path.join(dir, name);
               const data = fs.readFileSync(filePath);
               await github.rest.repos.uploadReleaseAsset({
@@ -216,35 +540,79 @@ jobs:
             }
 
   publish-manifest:
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.signed_release_test && inputs.publish_test_manifest)
-    needs: build
+    if: >-
+      ${{
+        always() &&
+        needs['sign-release'].result == 'success' &&
+        (
+          (
+            github.event_name == 'release' &&
+            needs['attach-release'].result == 'success'
+          ) ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.signed_release_test &&
+            inputs.publish_test_manifest
+          ) ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.create_release &&
+            needs['create-draft-release'].result == 'success'
+          )
+        )
+      }}
+    needs:
+      - sign-release
+      - create-draft-release
+      - attach-release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: singular-wasm-manifest-publisher
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
       RELEASE_ID: ${{ inputs.release_id || github.event.release.tag_name }}
     steps:
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: singular-in-browser-${{ env.RELEASE_ID }}
+          artifact-ids: ${{ needs.sign-release.outputs.release_artifact_id }}
           path: release-assets
 
       - name: Check out manifest branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: gh-pages
           path: manifests
 
       - name: Publish signed manifest to gh-pages
         run: |
+          set -euo pipefail
+
           test -f release-assets/release-manifest.json
           test -f release-assets/release-manifest.json.sig
-          mkdir -p "manifests/singular-wasm/${RELEASE_ID}"
+          manifest_dir="manifests/singular-wasm/${RELEASE_ID}"
+          if [[ -e "$manifest_dir" ]]; then
+            if [[ -f "$manifest_dir/release-manifest.json" &&
+                  -f "$manifest_dir/release-manifest.json.sig" ]] &&
+               cmp -s release-assets/release-manifest.json \
+                 "$manifest_dir/release-manifest.json" &&
+               cmp -s release-assets/release-manifest.json.sig \
+                 "$manifest_dir/release-manifest.json.sig"; then
+              echo "The exact signed manifest for ${RELEASE_ID} is already published."
+              exit 0
+            fi
+            echo "Refusing to replace the existing immutable manifest for ${RELEASE_ID}." >&2
+            exit 1
+          fi
+
+          mkdir -p "$manifest_dir"
           cp release-assets/release-manifest.json \
-            "manifests/singular-wasm/${RELEASE_ID}/release-manifest.json"
+            "$manifest_dir/release-manifest.json"
           cp release-assets/release-manifest.json.sig \
-            "manifests/singular-wasm/${RELEASE_ID}/release-manifest.json.sig"
+            "$manifest_dir/release-manifest.json.sig"
           cd manifests
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -254,5 +622,59 @@ jobs:
             echo "Signed manifest for ${RELEASE_ID} is already published."
           else
             git commit -m "publish Singular WASM manifest ${RELEASE_ID}"
+            git pull --rebase origin gh-pages
             git push origin HEAD:gh-pages
           fi
+
+  publish-manual-release:
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_dispatch' &&
+        inputs.create_release &&
+        needs['sign-release'].result == 'success' &&
+        needs['create-draft-release'].result == 'success' &&
+        needs['publish-manifest'].result == 'success'
+      }}
+    needs:
+      - sign-release
+      - create-draft-release
+      - publish-manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_ID: ${{ inputs.release_id }}
+      RELEASE_DATABASE_ID: ${{ needs['create-draft-release'].outputs.release_id }}
+    steps:
+      - name: Publish the completed draft release
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const tag = process.env.RELEASE_ID;
+            const releaseId = Number(process.env.RELEASE_DATABASE_ID);
+            if (!Number.isSafeInteger(releaseId) || releaseId <= 0) {
+              core.setFailed('The draft release id was not passed from the creation job.');
+              return;
+            }
+            const { data: release } = await github.rest.repos.getRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId
+            });
+            if (release.tag_name !== tag) {
+              core.setFailed(`Draft release id ${releaseId} belongs to ${release.tag_name}, not ${tag}.`);
+              return;
+            }
+            if (!release.draft) {
+              core.setFailed(`Release ${tag} is no longer a draft; refusing to modify it.`);
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              draft: false
+            });
+            core.info(`Published GitHub Release ${tag}.`);

@@ -25,9 +25,9 @@ Not tracked:
 - release zip and `dist/`
 - local Singular checkouts and dependency build trees.
 
-The CI stores build output as workflow artifacts
-(generated on pull requests or manual builds). Published releases attach the zip,
-manifest, and signature as GitHub Release assets.
+The CI stores build output as workflow artifacts. Pull requests, daily scheduled
+builds, and ordinary manual builds are unsigned and read-only. Published
+releases attach the zip, manifest, and signature as GitHub Release assets.
 
 ## Building In CI
 
@@ -37,9 +37,29 @@ Implemented in `.github/workflows/build.yml`:
 2. checks out `Singular/Singular` at the selected ref, default is
    `spielwiese`
 3. overlays this repo into `Singular/emscripten`
-4. builds the WebAssembly engine
-5. packages the static web app
-6. uploads a full release bundle and a deploy artifact.
+4. builds the WebAssembly engine and runs its coefficient tests under Node.js
+5. packages unsigned CI builds directly
+6. for releases, passes only the built public files to a fresh signing job
+7. uploads a full release bundle and a deploy artifact.
+
+To create an actual release from Actions, run the workflow on the default
+`main` branch, use a new `release_id` of the form `Singular-YYYY-MM-DD` (or
+`Singular-YYYY-MM-DD-N`), enable `create_release`, and confirm the trusted
+branch prompt. The workflow builds and signs the release, creates a draft,
+uploads its assets, publishes the immutable signed manifest to `gh-pages`, and
+only then publishes the GitHub Release. If a later step fails after draft
+creation, the release remains a recoverable draft. Release ids and manifests
+are immutable. If the manifest was already published, verify and publish the
+existing draft manually or use a new release id; never rebuild different bytes
+under the same id. If no manifest was published, the failed draft and tag may be
+deleted before requesting a clean rebuild.
+
+The existing GitHub UI flow remains supported: publishing a release with a
+valid tag triggers the same signed build and attaches its assets. This legacy
+path starts after the release is public and therefore requires release assets
+to remain editable; use the draft-first Actions path if immutable GitHub
+Releases are enabled. Creating a GitHub Release does not deploy files to the
+Singular webserver; deployment is a separate maintainer operation.
 
 For GitHub Releases, the workflow signs the release manifest and attaches the
 deploy zips plus manifest files to the GitHub Release. The repository secrets
@@ -51,6 +71,12 @@ SINGULAR_WASM_RELEASE_PUBLIC_KEY_PEM
 ```
 
 Pull-request builds do not need signing secrets and should remain read-only.
+Scheduled builds are also unsigned and cannot create releases or update
+`gh-pages`. The build job never receives a signing key. Signed tests and actual
+releases may only be dispatched from `main` with `Singular/Singular` fixed to
+the trusted `spielwiese` branch; a separate job checks out the trusted packaging
+code, signs the built public files, verifies the signature, and removes the
+private-key file before uploading artifacts.
 
 ## Local Serving for Tests
 
